@@ -1,0 +1,32 @@
+"""Database connection routes for the text2sql API."""
+from fastapi import APIRouter, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from api.core.schema_loader import load_database
+from api.routes.streaming import STREAM_HEADERS, with_keepalive
+
+database_router = APIRouter(tags=["Database Connection"])
+
+class DatabaseConnectionRequest(BaseModel):
+    """Database connection request model.
+
+    Args:
+        BaseModel (_type_): _description_
+    """
+
+    url: str
+
+@database_router.post("/database", operation_id="connect_database", tags=["mcp_tool"])
+async def connect_database(request: Request, db_request: DatabaseConnectionRequest):
+    """
+    Accepts a JSON payload with a database URL and attempts to connect.
+    Supports both PostgreSQL and MySQL databases.
+    Streams progress steps as a sequence of JSON messages separated by a delimiter.
+    """
+    generator = await load_database(db_request.url, request.state.user_id)
+    return StreamingResponse(
+        with_keepalive(generator),
+        media_type="application/json",
+        headers=STREAM_HEADERS,
+    )

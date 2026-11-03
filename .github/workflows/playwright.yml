@@ -1,0 +1,234 @@
+name: Playwright Tests
+on:
+  push:
+    branches: [ main, staging ]
+  pull_request:
+    branches: [ main, staging ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: 'lts/*'
+
+
+jobs:
+  test:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with:
+        persist-credentials: false
+
+    # Detect whether AI secrets are available (not available for Dependabot / fork PRs)
+    - name: Check for AI secrets
+      id: check-secrets
+      run: |
+        if [ -n "$AZURE_API_KEY" ] && [ -n "$AZURE_API_BASE" ] && [ -n "$AZURE_API_VERSION" ]; then
+          echo "has-ai-secrets=true" >> "$GITHUB_OUTPUT"
+          echo "AI secrets are available — full E2E suite will run"
+        else
+          echo "has-ai-secrets=false" >> "$GITHUB_OUTPUT"
+          echo "AI secrets are NOT available — only non-AI E2E tests will run"
+        fi
+      env:
+        AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+        AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
+        AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
+    
+    # Setup Python
+    - name: Set up Python
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+
+    # Install uv
+    - name: Install uv
+      uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      with:
+        version: "0.7.12"
+        prune-cache: true
+
+    # Setup Node.js
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: |
+          package-lock.json
+          app/package-lock.json
+
+
+    # Install Python dependencies
+    - name: Install Python dependencies
+      run: uv sync --locked --all-extras
+    
+    # Install Node dependencies (root - for Playwright)
+    - name: Install root dependencies
+      run: npm ci
+
+    # Install only system dependencies; CI uses the runner's preinstalled Chrome.
+    - name: Install Playwright system deps
+      run: |
+        npx playwright install-deps chromium
+        google-chrome --version
+
+    # Install Node dependencies (frontend)
+    - name: Install frontend dependencies
+      run: npm ci
+      working-directory: ./app
+
+    # Build frontend
+    - name: Build frontend
+      run: npm run build
+      working-directory: ./app
+    
+    # Start Docker Compose services (test databases) — only needed for AI tests
+    - name: Start test databases
+      if: steps.check-secrets.outputs.has-ai-secrets == 'true'
+      run: |
+        docker compose -f e2e/docker-compose.test.yml up -d --wait --wait-timeout 120
+        docker ps -a
+    
+    # Start FalkorDB (Redis graph database)
+    - name: Start FalkorDB
+      run: |
+        docker run -d --name falkordb-test -p 6379:6379 falkordb/falkordb:latest
+        echo "Waiting for FalkorDB to be ready..."
+        # Wait for FalkorDB to accept connections and be fully initialized
+        for i in {1..30}; do
+          if docker exec falkordb-test redis-cli PING > /dev/null 2>&1; then
+            # Test that FalkorDB graph commands work
+            if docker exec falkordb-test redis-cli GRAPH.LIST > /dev/null 2>&1; then
+              echo "FalkorDB graph module loaded, testing vector index creation..."
+              # Test creating a graph with vector index (the actual operation that fails)
+              if docker exec falkordb-test redis-cli GRAPH.QUERY test_graph "CREATE VECTOR INDEX FOR (n:Test) ON (n.embedding)" > /dev/null 2>&1; then
+                # Clean up test graph
+                docker exec falkordb-test redis-cli GRAPH.DELETE test_graph > /dev/null 2>&1 || true
+                echo "FalkorDB is fully ready with vector index support!"
+                # Extra wait to ensure complete initialization
+                sleep 5
+                break
+              fi
+            fi
+          fi
+          echo "Waiting for FalkorDB initialization... attempt $i/30"
+          sleep 1
+        done
+        # Verify FalkorDB is accessible from host
+        echo "Testing FalkorDB connectivity from host..."
+        docker ps -a
+    
+    # Create CI .env so load_dotenv() finds the required variables
+    - name: Create CI .env
+      run: |
+        cat > .env <<EOF
+        FASTAPI_SECRET_KEY=test-secret-key-for-ci
+        APP_ENV=development
+        FASTAPI_DEBUG=False
+        FALKORDB_URL=redis://localhost:6379
+        DISABLE_MCP=true
+        EOF
+
+    # Start the FastAPI application
+    - name: Start FastAPI application
+      id: start-server
+      run: |
+        # Start server in background with uv
+        uv run uvicorn api.index:app --host localhost --port 5000 > /tmp/uvicorn.log 2>&1 &
+        UVICORN_PID=$!
+        echo "pid=$UVICORN_PID" >> "$GITHUB_OUTPUT"
+        echo "Started server with PID: $UVICORN_PID"
+        # Wait for app to start
+        echo "Waiting for application to start..."
+        for i in {1..30}; do
+          if curl -f http://localhost:5000/ 2>/dev/null; then
+            echo "Application started successfully!"
+            break
+          fi
+          echo "Waiting... attempt $i/30"
+          sleep 1
+          if [ $i -eq 30 ]; then
+            echo "Failed to start application after 30 seconds"
+            echo "=== Server logs ==="
+            cat /tmp/uvicorn.log
+            exit 1
+          fi
+        done
+      env:
+        PYTHONUNBUFFERED: 1
+        FASTAPI_SECRET_KEY: test-secret-key-for-ci
+        APP_ENV: development
+        FASTAPI_DEBUG: False
+        FALKORDB_URL: redis://localhost:6379
+        DISABLE_MCP: true
+        # Signup mails a confirmation code and the account is only created when
+        # it is typed back, so the suite has to be able to read the message.
+        # Azure OpenAI API keys - required for database schema analysis
+        AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+        AZURE_API_BASE: ${{ secrets.AZURE_API_BASE }}
+        AZURE_API_VERSION: ${{ secrets.AZURE_API_VERSION }}
+    
+    # Create auth directory for storage state
+    - name: Create auth directory
+      run: mkdir -p e2e/.auth
+    
+    # Run non-AI Playwright tests (always — no LLM secrets needed).
+    # Each run gets its own report/output directory: Playwright clears both at
+    # the start of a run, so sharing them let the AI run wipe the failing
+    # non-AI run's HTML report, traces and screenshots before they were uploaded.
+    # `list` alone would replace the configured `html` reporter and leave the
+    # uploaded report directories empty, so both are named explicitly.
+    - name: Run Playwright tests (no AI)
+      run: npx playwright test --grep-invert @requires-ai --reporter=list,html --output=test-results-no-ai
+      env:
+        CI: true
+        PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report-no-ai
+
+    # Run AI-dependent Playwright tests (only when secrets are available).
+    # `!cancelled()` keeps them running after a non-AI failure, but they are
+    # also gated on the server having started: without that they would run
+    # against a dead stack after any earlier setup failure, burning the job
+    # budget on retries for zero signal.
+    - name: Run Playwright tests (AI)
+      if: "!cancelled() && steps.start-server.outcome == 'success' && steps.check-secrets.outputs.has-ai-secrets == 'true'"
+      run: npx playwright test --grep @requires-ai --reporter=list,html --output=test-results-ai
+      env:
+        CI: true
+        PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report-ai
+    
+    # Upload test results on failure
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+      if: failure()
+      with:
+        name: playwright-report
+        path: |
+          playwright-report-no-ai/
+          playwright-report-ai/
+        retention-days: 30
+    
+    # Upload test screenshots on failure
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+      if: failure()
+      with:
+        name: test-results
+        path: |
+          test-results-no-ai/
+          test-results-ai/
+        retention-days: 30
+    
+    # Cleanup - Stop all containers and background processes
+    - name: Cleanup
+      if: always()
+      run: |
+        kill ${{ steps.start-server.outputs.pid }} || true
+        docker compose -f e2e/docker-compose.test.yml down -v || true
+        docker stop falkordb-test || true
+        docker rm falkordb-test || true

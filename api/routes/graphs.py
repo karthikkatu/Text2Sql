@@ -1,0 +1,441 @@
+"""Graph-related routes for the text2sql API."""
+
+import json
+import logging
+import uuid
+from typing import NoReturn
+from fastapi import APIRouter, Request, HTTPException
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, ValidationError
+from starlette.datastructures import UploadFile
+
+from api.core.schema_loader import list_databases
+from api.core.text2sql import (
+    ChatRequest,
+    ConfirmRequest,
+    _Final,
+    delete_database,
+    get_schema,
+    refresh_database_schema,
+    run_confirmed,
+    run_query,
+)
+from api.core.pipeline import (
+    GENERAL_PREFIX,
+    MESSAGE_DELIMITER,
+    graph_name,
+    is_general_graph,
+    validate_and_truncate_chat,
+    validate_custom_model,
+)
+from api.core.errors import GraphNotFoundError, InternalError, InvalidArgumentError
+from api.graph import get_user_rules, set_user_rules
+from api.routes.usage_tracking import record_query_usage_background
+from api.routes.streaming import STREAM_HEADERS, with_keepalive
+
+graphs_router = APIRouter(tags=["Graphs & Databases"])
+
+
+async def _serialize_pipeline(  # pylint: disable=too-many-arguments
+    gen, *, user_id: str, namespaced: str, question: str, query_id: str, endpoint: str
+):
+    """Serialize pipeline events to the wire format and stop on ``_Final``.
+
+    Pure encoding loop — no exception handling here. Each route handler
+    wraps iteration in its own ``try/except`` so the broad-except (which
+    emits a generic error event without leaking stack data) lives in the
+    route function CodeQL already accepts, not in a shared helper.
+
+    Always-on usage tracking lives here in the route layer (not in
+    ``api/core``) so it ships with the hosted app, never the PyPI SDK. Exactly
+    one event is recorded per query, derived from the final ``QueryResult`` —
+    skipping the destructive-confirmation prompt, which has no outcome yet (the
+    ``/confirm`` call records that query).
+    """
+    final = None
+    async for event in gen:
+        if isinstance(event, _Final):
+            final = event.value
+            break
+        yield json.dumps(event) + MESSAGE_DELIMITER
+    if final is not None and not final.requires_confirmation:
+        # "Success" = a valid query that ran without error. error_message is
+        # None alone isn't enough: off-topic / not-SQL-translatable results
+        # carry is_valid=False with no error, and must not inflate success_count.
+        record_query_usage_background(
+            user_id, namespaced,
+            success=final.is_valid and final.error_message is None,
+            question=question,
+            error=final.error_message or "",
+            query_id=query_id,
+            endpoint=endpoint,
+        )
+
+
+class GraphData(BaseModel):
+    """JSON body for loading a schema: the database to load it into."""
+
+    database: str
+
+
+@graphs_router.get(
+    "",
+    operation_id="list_databases",
+    tags=["mcp_tool"]
+)
+async def list_graphs(request: Request):
+    """
+    List all available graphs/databases.
+    """
+    graphs = await list_databases(request.state.user_id, GENERAL_PREFIX)
+    return JSONResponse(content=graphs)
+
+
+@graphs_router.get(
+    "/{graph_id}/data",
+    operation_id="database_schema",
+    tags=["mcp_tool"]
+)
+async def get_graph_data(
+    request: Request, graph_id: str
+):  # pylint: disable=too-many-locals,too-many-branches
+    """Return all nodes and edges for the specified database schema.
+
+        args:
+            graph_id (str): The ID of the graph to query (the database name).
+    """
+
+    try:
+        schema = await get_schema(request.state.user_id, graph_id)
+        return JSONResponse(content=schema)
+    except GraphNotFoundError as gnfe:
+        logging.warning("Graph not found: %s", str(gnfe))
+        return JSONResponse(content={"error": "Database not found"}, status_code=404)
+    except InternalError as ie:
+        logging.error("Internal error getting schema: %s", str(ie))
+        return JSONResponse(
+            content={"error": "Failed to retrieve database schema"},
+            status_code=500
+        )
+
+
+_LOADER_BY_EXTENSION = {
+    ".json": "JSONLoader",
+    ".xml": "ODataLoader",
+    ".csv": "CSVLoader",
+}
+
+
+async def _load_graph_from_upload(request: Request) -> NoReturn:
+    """Dispatch a multipart upload to the loader matching the file extension."""
+    # `async with` is what FastAPI itself does via the request's exit stack.
+    # Parsing the form by hand skips that, and an upload past Starlette's 1 MB
+    # spool threshold becomes a SpooledTemporaryFile that stays open until GC
+    # even though the request is rejected here without reading the body.
+    async with request.form() as form:
+        file = form.get("file")
+        if not isinstance(file, UploadFile) or not file.filename:
+            raise HTTPException(status_code=415, detail="Missing file upload")
+
+        # `rpartition` yields an empty separator for a dotless name, in which
+        # case the whole filename would otherwise be read as its own extension.
+        _, separator, extension = file.filename.rpartition(".")
+        loader = (
+            _LOADER_BY_EXTENSION.get(f".{extension.lower()}") if separator else None
+        )
+        if loader is None:
+            raise HTTPException(status_code=415, detail="Unsupported file type")
+
+    raise HTTPException(status_code=501, detail=f"{loader} is not implemented yet")
+
+
+# Content-Type is dispatched by hand in the handler, so neither body is a
+# declared parameter and FastAPI would advertise this route as taking no body
+# at all. Describe the accepted payloads explicitly so `/docs` and generated
+# clients stay accurate.
+_LOAD_GRAPH_REQUEST_BODY = {
+    "required": True,
+    "content": {
+        "application/json": {"schema": GraphData.model_json_schema()},
+        "application/xml": {"schema": {"type": "string"}},
+        "text/xml": {"schema": {"type": "string"}},
+        "multipart/form-data": {
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "format": "binary",
+                        "description": "A .json, .xml or .csv schema file.",
+                    }
+                },
+                "required": ["file"],
+            }
+        },
+    },
+}
+
+
+@graphs_router.post(
+    "",
+    response_model=None,
+    openapi_extra={"requestBody": _LOAD_GRAPH_REQUEST_BODY},
+)
+async def load_graph(request: Request) -> NoReturn:
+    """
+    This route is used to load the graph data into the database.
+    It expects either:
+    - A JSON payload (application/json)
+    - A File upload (multipart/form-data)
+    - An XML payload (application/xml or text/xml)
+    """
+    # Dispatch on Content-Type by hand: declaring both a JSON body model and an
+    # `UploadFile` parameter makes FastAPI parse every request as multipart, so
+    # the JSON and XML branches would be unreachable.
+    content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+
+    if content_type == "application/json":
+        try:
+            GraphData(**await request.json())
+        except (ValueError, TypeError, ValidationError) as exc:
+            raise HTTPException(
+                status_code=422, detail="Invalid JSON payload"
+            ) from exc
+        raise HTTPException(status_code=501, detail="JSONLoader is not implemented yet")
+
+    if content_type in ("application/xml", "text/xml"):
+        raise HTTPException(status_code=501, detail="ODataLoader is not implemented yet")
+
+    if content_type == "multipart/form-data":
+        await _load_graph_from_upload(request)
+
+    raise HTTPException(status_code=415, detail="Unsupported Content-Type")
+
+
+@graphs_router.post(
+    "/{graph_id}",
+    operation_id="query_database",
+    tags=["mcp_tool"]
+)
+async def query_graph(
+    request: Request, graph_id: str, chat_data: ChatRequest
+):  # pylint: disable=too-many-statements
+    """
+    Query the Database with the given graph_id and chat_data.
+
+        Args:
+            graph_id (str): The ID of the graph to query.
+            chat_data (ChatRequest): The chat data containing user queries and context.
+    """
+    # Eager validation: ``run_query`` is an async generator, so its body
+    # (including ``validate_and_truncate_chat``/``graph_name``) only runs once
+    # the StreamingResponse is iterated. Surfacing client errors as HTTP 400
+    # requires a synchronous check before we hand the stream to the response.
+    try:
+        namespaced = graph_name(request.state.user_id, graph_id)
+        validate_and_truncate_chat(chat_data)
+        validate_custom_model(getattr(chat_data, "custom_model", None))
+    except InvalidArgumentError as iae:
+        logging.warning("Invalid argument in query: %s", str(iae))
+        return JSONResponse(content={"error": "Invalid query request"}, status_code=400)
+
+    async def stream():
+        question = chat_data.chat[-1]
+        query_id = str(uuid.uuid4())
+        try:
+            async for chunk in with_keepalive(_serialize_pipeline(
+                run_query(request.state.user_id, graph_id, chat_data),
+                user_id=request.state.user_id,
+                namespaced=namespaced,
+                question=question,
+                query_id=query_id,
+                endpoint=request.url.path,
+            )):
+                yield chunk
+        except Exception:  # pylint: disable=broad-exception-caught
+            # Don't leak stack traces (CodeQL: information exposure through
+            # exception). Log internally; emit a generic error event.
+            logging.exception("Streaming query failed")
+            # Pipeline crashed before _Final, so _serialize_pipeline didn't
+            # record — count this attempt as a failure here.
+            record_query_usage_background(
+                request.state.user_id,
+                namespaced,
+                success=False,
+                question=question,
+                error="Unhandled streaming query failure",
+                query_id=query_id,
+                endpoint=request.url.path,
+            )
+            yield json.dumps({
+                "type": "error",
+                "final_response": True,
+                "message": "Internal error while processing query",
+            }) + MESSAGE_DELIMITER
+
+    return StreamingResponse(
+        stream(), media_type="application/json", headers=STREAM_HEADERS,
+    )
+
+
+@graphs_router.post("/{graph_id}/confirm")
+async def confirm_destructive_operation(
+    request: Request,
+    graph_id: str,
+    confirm_data: ConfirmRequest,
+):
+    """
+    Handle user confirmation for destructive SQL operations.
+    """
+
+    # Eager validation — see note on the query endpoint above.
+    try:
+        namespaced = graph_name(request.state.user_id, graph_id)
+        if is_general_graph(namespaced):
+            raise InvalidArgumentError(
+                "Destructive operations are not allowed on demo graphs"
+            )
+        if not (getattr(confirm_data, "sql_query", "") or "").strip():
+            raise InvalidArgumentError("No SQL query provided")
+        validate_custom_model(getattr(confirm_data, "custom_model", None))
+    except InvalidArgumentError as iae:
+        logging.warning("Invalid argument in destructive operation: %s", str(iae))
+        return JSONResponse(content={"error": "Invalid confirmation request"}, status_code=400)
+
+    async def stream():
+        question = str(confirm_data.chat[-1]) if confirm_data.chat else ""
+        query_id = str(uuid.uuid4())
+        try:
+            async for chunk in with_keepalive(_serialize_pipeline(
+                run_confirmed(request.state.user_id, graph_id, confirm_data),
+                user_id=request.state.user_id,
+                namespaced=namespaced,
+                question=question,
+                query_id=query_id,
+                endpoint=request.url.path,
+            )):
+                yield chunk
+        except Exception:  # pylint: disable=broad-exception-caught
+            # See note on the query endpoint above (CodeQL).
+            logging.exception("Streaming confirmed-destructive query failed")
+            # Pipeline crashed before _Final — record the failed attempt here.
+            record_query_usage_background(
+                request.state.user_id,
+                namespaced,
+                success=False,
+                question=question,
+                error="Unhandled confirmed-query failure",
+                query_id=query_id,
+                endpoint=request.url.path,
+            )
+            yield json.dumps({
+                "type": "error",
+                "final_response": True,
+                "message": "Internal error while processing confirmation",
+            }) + MESSAGE_DELIMITER
+
+    return StreamingResponse(
+        stream(), media_type="application/json", headers=STREAM_HEADERS,
+    )
+
+
+@graphs_router.post("/{graph_id}/refresh")
+async def refresh_graph_schema(request: Request, graph_id: str):
+    """
+    Manually refresh the graph schema from the database.
+    This endpoint allows users to manually trigger a schema refresh
+    if they suspect the graph is out of sync with the database.
+    Streams progress steps as a sequence of JSON messages.
+    """
+    try:
+        generator = await refresh_database_schema(request.state.user_id, graph_id)
+        return StreamingResponse(
+            with_keepalive(generator),
+            media_type="application/json",
+            headers=STREAM_HEADERS,
+        )
+    except (InternalError, InvalidArgumentError) as e:
+        # Log detailed error internally, send generic message to user
+        if isinstance(e, InternalError):
+            logging.error("Internal error refreshing schema: %s", str(e))
+            error_message = "Failed to refresh database schema"
+            status_code = 500
+        else:
+            logging.warning("Invalid argument refreshing schema: %s", str(e))
+            error_message = "Invalid request to refresh schema"
+            status_code = 400
+        return JSONResponse(content={"error": error_message}, status_code=status_code)
+
+
+@graphs_router.delete("/{graph_id}")
+async def delete_graph(request: Request, graph_id: str):
+    """Delete the specified graph (namespaced to the user).
+
+    This will attempt to delete the FalkorDB graph belonging to the
+    local user. The graph id used by the client is stripped of
+    namespace and will be namespaced using the user's id from the request
+    state.
+    """
+
+    try:
+        result = await delete_database(request.state.user_id, graph_id)
+        return JSONResponse(content=result)
+
+    except InvalidArgumentError as iae:
+        logging.warning("Invalid argument in delete: %s", str(iae))
+        return JSONResponse(content={"error": "Invalid delete request"}, status_code=400)
+    except GraphNotFoundError as gnfe:
+        logging.warning("Graph not found for deletion: %s", str(gnfe))
+        return JSONResponse(content={"error": "Database not found"}, status_code=404)
+    except InternalError as ie:
+        logging.error("Internal error deleting database: %s", str(ie))
+        return JSONResponse(
+            content={"error": "Failed to delete database"},
+            status_code=500
+        )
+
+
+class UserRulesRequest(BaseModel):
+    """User rules request model."""
+    user_rules: str
+
+
+@graphs_router.get("/{graph_id}/user-rules")
+async def get_graph_user_rules(request: Request, graph_id: str):
+    """Get user rules for the specified graph."""
+    try:
+        full_graph_id = graph_name(request.state.user_id, graph_id)
+        user_rules = await get_user_rules(full_graph_id)
+        logging.info("Retrieved user rules length: %d", len(user_rules) if user_rules else 0)
+        return JSONResponse(content={"user_rules": user_rules})
+    except GraphNotFoundError:
+        return JSONResponse(content={"error": "Database not found"}, status_code=404)
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logging.error("Error getting user rules: %s", str(e))
+        return JSONResponse(content={"error": "Failed to get user rules"}, status_code=500)
+
+
+@graphs_router.put("/{graph_id}/user-rules")
+async def update_graph_user_rules(request: Request, graph_id: str, data: UserRulesRequest):
+    """Update user rules for the specified graph."""
+    try:
+        # Prevent modifying rules for demo databases
+        if GENERAL_PREFIX and graph_id.startswith(GENERAL_PREFIX):
+            return JSONResponse(
+                content={"error": "Rules cannot be modified for demo databases"},
+                status_code=403
+            )
+
+        logging.info(
+            "Received request to update user rules, content length: %d", len(data.user_rules)
+        )
+        full_graph_id = graph_name(request.state.user_id, graph_id)
+        await set_user_rules(full_graph_id, data.user_rules)
+        logging.info("User rules updated successfully")
+        return JSONResponse(content={"success": True, "user_rules": data.user_rules})
+    except GraphNotFoundError:
+        logging.error("Graph not found")
+        return JSONResponse(content={"error": "Database not found"}, status_code=404)
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logging.error("Error updating user rules: %s", str(e))
+        return JSONResponse(content={"error": "Failed to update user rules"}, status_code=500)

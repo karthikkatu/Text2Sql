@@ -1,0 +1,108 @@
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { AuthService } from '@/services/auth';
+import type { AuthProviders, User } from '@/types/api';
+
+// How long to wait before re-checking while the backend cannot answer. The
+// login survives the outage, so the session comes back on its own once the
+// backend does -- without this the user stays in limbo until they reload.
+const UNAVAILABLE_RETRY_MS = 15000;
+
+interface AuthContextType {
+  user: User | null;
+  isAuthenticated: boolean;
+  /** Which sign-in methods the backend offers; null until the first check lands. */
+  providers: AuthProviders | null;
+  /** The check could not be made, as opposed to answering "not logged in". */
+  isUnavailable: boolean;
+  isLoading: boolean;
+  login: {
+    google: () => Promise<void>;
+    github: () => Promise<void>;
+  };
+  logout: () => Promise<void>;
+  refreshAuth: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [user, setUser] = useState<User | null>(null);
+  const [providers, setProviders] = useState<AuthProviders | null>(null);
+  const [isUnavailable, setIsUnavailable] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const checkAuth = async () => {
+    if (retryTimer.current) {
+      clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    }
+    try {
+      setIsLoading(true);
+      const status = await AuthService.checkAuthStatus();
+      // A backend that could not answer has not said the session ended, so an
+      // outage must not log the user out. Same reasoning for the providers:
+      // keep the last known ones so the sign-in form does not vanish mid-outage.
+      if (!status.unavailable) {
+        setUser(status.user || null);
+      }
+      if (status.providers) {
+        setProviders(status.providers);
+      }
+      setIsUnavailable(!!status.unavailable);
+      if (status.unavailable) {
+        retryTimer.current = setTimeout(checkAuth, UNAVAILABLE_RETRY_MS);
+      }
+    } catch (error) {
+      console.log('Backend not available - running in demo mode');
+      // Silently fail - this is expected when backend isn't running
+      setUser(null);
+      setIsUnavailable(false);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    checkAuth();
+    return () => {
+      if (retryTimer.current) clearTimeout(retryTimer.current);
+    };
+  }, []);
+
+  const handleLogout = async () => {
+    try {
+      await AuthService.logout();
+      setUser(null);
+      setIsUnavailable(false);
+    } catch (error) {
+      console.error('Logout failed:', error);
+      throw error;
+    }
+  };
+
+  const value: AuthContextType = {
+    user,
+    isAuthenticated: !!user,
+    providers,
+    isUnavailable,
+    isLoading,
+    login: {
+      google: AuthService.loginWithGoogle,
+      github: AuthService.loginWithGithub,
+    },
+    logout: handleLogout,
+    refreshAuth: checkAuth,
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};
+
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+};
+

@@ -1,0 +1,149 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, staging ]
+  pull_request:
+    branches: [ main, staging ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+
+    services:
+      falkordb:
+        image: falkordb/falkordb:latest
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with:
+        persist-credentials: false
+
+    - name: Set up Python
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: '3.12'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      with:
+        version: "0.7.12"
+        prune-cache: true
+
+    - name: Install dependencies
+      run: |
+        uv sync --locked --all-extras
+
+    - name: Install frontend dependencies
+      run: |
+        node --version || true
+        npm --version || true
+        (cd app && npm ci)
+
+    - name: Build frontend
+      run: |
+        cd app && npm run build
+
+    - name: Create test environment file
+      run: |
+        cp .env.example .env
+        echo "FASTAPI_SECRET_KEY=test-secret-key" >> .env
+        echo "FASTAPI_DEBUG=False" >> .env
+
+    - name: Run unit tests
+      run: |
+        uv run python -m pytest tests/ -k "not e2e and not test_sdk" --verbose
+
+    - name: Run lint
+      run: |
+        make lint
+
+  sdk-tests:
+    runs-on: ubuntu-latest
+
+    services:
+      falkordb:
+        image: falkordb/falkordb:latest
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: testdb
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with:
+        persist-credentials: false
+
+    - name: Set up Python
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: '3.12'
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      with:
+        version: "latest"
+        prune-cache: true
+
+    - name: Install dependencies
+      run: |
+        uv sync --locked --all-extras
+
+    - name: Create test environment file
+      run: |
+        cp .env.example .env
+        echo "FASTAPI_SECRET_KEY=test-secret-key" >> .env
+        echo "FALKORDB_URL=redis://localhost:6379" >> .env
+
+    - name: Run SDK tests
+      env:
+        FALKORDB_URL: redis://localhost:6379
+        TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/testdb
+        TEST_MYSQL_URL: mysql://root:root@localhost:3306/testdb
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      run: |
+        uv run python -m pytest tests/test_sdk/ -v

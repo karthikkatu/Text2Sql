@@ -1,0 +1,372 @@
+"""Application factory for the text2sql FastAPI app."""
+
+import hmac
+import logging
+import os
+import secrets
+
+from fastapi import Depends, FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import Response
+from fastmcp import FastMCP
+from fastmcp.server.providers.openapi import MCPType, RouteMap
+
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+from api.helpers.request_security import is_secure_request
+from api.core.errors import TRANSIENT_BACKEND_ERRORS
+from api.analytics import report_error
+from api.local_user import attach_local_user
+from api.routes.graphs import graphs_router
+from api.routes.database import database_router
+from api.routes.settings import settings_router
+from api.routes.meta import meta_router, app_version
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+
+class SecurityMiddleware(BaseHTTPMiddleware):  # pylint: disable=too-few-public-methods
+    """Middleware for security checks including static file access"""
+
+    STATIC_PREFIX = "/static/"
+
+    # The exact FastAPI documentation endpoints, which are the only paths
+    # allowed the permissive DOCS_CSP.  A prefix test would also match SPA
+    # routes such as /docs-preview, handing them 'unsafe-eval' and two CDNs.
+    DOCS_PATHS = frozenset(
+        {"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"}
+    )
+
+    # CSP for FastAPI interactive docs (/docs, /redoc) which load CDN assets.
+    # ReDoc builds its search index in a blob: worker, and both doc pages
+    # default to a favicon served from fastapi.tiangolo.com.
+    DOCS_CSP = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
+        "https://cdn.jsdelivr.net https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline' "
+        "https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+        "img-src 'self' data: https://cdn.jsdelivr.net "
+        "https://fastapi.tiangolo.com; "
+        "font-src 'self' https://fonts.gstatic.com data:; "
+        "connect-src 'self'; "
+        "worker-src 'self' blob:; "
+        "frame-ancestors 'none'; "
+        "object-src 'none'; "
+        "base-uri 'self'"
+    )
+
+    # CSP for the SPA and all other routes.
+    DEFAULT_CSP = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "img-src 'self' data:; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "connect-src 'self' https://api.github.com; "
+        "frame-ancestors 'none'; "
+        "object-src 'none'; "
+        "base-uri 'self'"
+    )
+
+    @staticmethod
+    def _apply_security_headers(response: Response, path: str) -> None:
+        """Apply all security headers to a response."""
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains; preload"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=(), payment=()"
+        )
+
+        # Use a more permissive CSP for FastAPI docs pages
+        if path in SecurityMiddleware.DOCS_PATHS:
+            response.headers["Content-Security-Policy"] = (
+                SecurityMiddleware.DOCS_CSP
+            )
+        else:
+            response.headers["Content-Security-Policy"] = (
+                SecurityMiddleware.DEFAULT_CSP
+            )
+
+    @staticmethod
+    def _has_traversal_segment(filename: str) -> bool:
+        """True if any segment of the path is a parent-directory marker.
+
+        Substring-matching "../" misses a bare trailing ".." and the
+        backslash-separated form, so the path is split into segments instead.
+        """
+        return ".." in filename.replace("\\", "/").split("/")
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        path = request.url.path
+
+        # Block directory access in static files
+        if path.startswith(self.STATIC_PREFIX):
+            filename = path[len(self.STATIC_PREFIX) :]
+            if (
+                not filename
+                or filename.endswith("/")
+                or self._has_traversal_segment(filename)
+            ):
+                response = JSONResponse(
+                    status_code=403, content={"detail": "Forbidden"}
+                )
+                self._apply_security_headers(response, path)
+                return response
+
+        response = await call_next(request)
+        self._apply_security_headers(response, path)
+        return response
+
+
+def _is_secure_request(request: Request) -> bool:
+    """Determine if the request is over HTTPS."""
+    return is_secure_request(request)
+
+
+class CSRFMiddleware(BaseHTTPMiddleware):  # pylint: disable=too-few-public-methods
+    """Double Submit Cookie CSRF protection.
+
+    Ensures a csrf_token cookie (readable by JS) exists, setting it
+    on the response if the incoming request does not already carry one.
+    State-changing requests must echo the cookie value back
+    via the X-CSRF-Token header.  There is no login, so this is what stops
+    another website from driving the local server through the user's browser.
+    """
+
+    SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+    CSRF_COOKIE = "csrf_token"
+    CSRF_HEADER = "x-csrf-token"
+
+    # Paths exempt from CSRF validation.
+    # "/mcp" has no trailing slash so it also covers sub-paths like /mcp/sse.
+    EXEMPT_PREFIXES = ("/mcp",)
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        # Validate CSRF for unsafe, non-exempt, non-Bearer requests
+        if (
+            request.method not in self.SAFE_METHODS
+            and not request.url.path.startswith(self.EXEMPT_PREFIXES)
+        ):
+            cookie_token = request.cookies.get(self.CSRF_COOKIE)
+            header_token = request.headers.get(self.CSRF_HEADER)
+
+            if (
+                not cookie_token
+                or not header_token
+                or not hmac.compare_digest(cookie_token, header_token)
+            ):
+                response = JSONResponse(
+                    status_code=403,
+                    content={"detail": "CSRF token missing or invalid"},
+                )
+                self._ensure_csrf_cookie(request, response)
+                return response
+
+        response = await call_next(request)
+        self._ensure_csrf_cookie(request, response)
+        return response
+
+    CSRF_COOKIE_MAX_AGE = 60 * 60 * 24 * 14
+
+    def _ensure_csrf_cookie(self, request: Request, response):
+        """Set the CSRF cookie if it is not already present."""
+        if not request.cookies.get(self.CSRF_COOKIE):
+            token = secrets.token_urlsafe(32)
+            response.set_cookie(
+                key=self.CSRF_COOKIE,
+                value=token,
+                httponly=False,  # JS must read this value
+                samesite="lax",
+                secure=_is_secure_request(request),
+                path="/",
+                max_age=self.CSRF_COOKIE_MAX_AGE,
+            )
+
+
+def create_app():  # pylint: disable=too-many-statements
+    """Create and configure the FastAPI application."""
+
+    # Create the FastAPI app instance with original routes
+    # Will be merged with MCP app later if MCP is enabled
+    app = FastAPI(
+        title="QueryWeaver"
+    )
+
+    # Include routers
+    # The dependency gives each route its (single, implicit) user.
+    local_user = [Depends(attach_local_user)]
+    app.include_router(graphs_router, prefix="/graphs", dependencies=local_user)
+    app.include_router(database_router, dependencies=local_user)
+    app.include_router(settings_router, prefix="/settings", dependencies=local_user)
+    app.include_router(meta_router)
+
+
+
+    # Control MCP endpoints via environment variable DISABLE_MCP
+    # Default: MCP is enabled unless DISABLE_MCP is set to true
+    disable_mcp = os.getenv("DISABLE_MCP", "false").lower() in ("1", "true", "yes")
+    mcp_app = None
+    if disable_mcp:
+        logging.info("MCP endpoints disabled via DISABLE_MCP environment variable")
+        routes=[
+            *app.routes,  # Original API routes only
+        ]
+    else:
+        mcp = FastMCP.from_fastapi(
+            app=app,
+            name="queryweaver",
+            route_maps=[
+                RouteMap(tags={"mcp_resource"}, mcp_type=MCPType.RESOURCE),
+                RouteMap(
+                    tags={"mcp_resource_template"},
+                    mcp_type=MCPType.RESOURCE_TEMPLATE,
+                ),
+                RouteMap(tags={"mcp_tool"}, mcp_type=MCPType.TOOL),
+                RouteMap(mcp_type=MCPType.EXCLUDE),
+            ],
+        )
+        mcp_app = mcp.http_app(path="/mcp")
+
+        # Combine routes from both apps
+        routes = [
+            *mcp_app.routes,  # MCP routes
+            *app.routes,  # Original API routes
+        ]
+
+    # Combine the MCP app and original app
+    app = FastAPI(
+        title="QueryWeaver",
+        version=app_version(),
+        description="Text2SQL with Graph-Powered Schema Understanding",
+        openapi_tags=[
+            {
+                "name": "Graphs & Databases",
+                "description": "Database schema management and querying",
+            },
+            {
+                "name": "Database Connection",
+                "description": "Connect to external databases",
+            },
+        ],
+        routes=routes,
+        lifespan=mcp_app.lifespan if mcp_app else None,
+    )
+
+    app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+
+    # Add CSRF middleware (double-submit cookie pattern)
+    app.add_middleware(CSRFMiddleware)
+
+    # Add security middleware.  add_middleware prepends, so registering this
+    # last makes it the outermost layer: its headers then also cover the 403
+    # that CSRFMiddleware returns before call_next is ever reached.
+    app.add_middleware(SecurityMiddleware)
+
+    # Mount static files from the React build (app/dist)
+    # This serves the bundled assets (JS, CSS, images, etc.)
+    dist_path = os.path.join(os.path.dirname(__file__), "../app/dist")
+    if os.path.exists(dist_path):
+        # Mount the built React app's static assets
+        # Vite bundles JS/CSS into assets/, and copies public/ files to dist root
+        app.mount(
+            "/assets",
+            StaticFiles(directory=os.path.join(dist_path, "assets")),
+            name="assets"
+        )
+
+        # Mount public folders if they exist
+        if os.path.exists(os.path.join(dist_path, "icons")):
+            app.mount(
+                "/icons",
+                StaticFiles(directory=os.path.join(dist_path, "icons")),
+                name="icons"
+            )
+        if os.path.exists(os.path.join(dist_path, "img")):
+            app.mount(
+                "/img",
+                StaticFiles(directory=os.path.join(dist_path, "img")),
+                name="img"
+            )
+
+        # Serve favicon and other root files
+        app.mount("/static", StaticFiles(directory=dist_path), name="static")
+    else:
+        logging.warning(
+            "React build directory not found at %s. "
+            "Run 'cd app && npm run build' to build the frontend.",
+            dist_path
+        )
+
+    # Serve favicon
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        """Serve the favicon from the React build directory."""
+        favicon_path = os.path.join(dist_path, "favicon.ico")
+        if os.path.exists(favicon_path):
+            return FileResponse(favicon_path, media_type="image/x-icon")
+        return JSONResponse({"error": "Favicon not found"}, status_code=404)
+
+    async def handle_transient_backend_error(
+        request: Request, exc: Exception
+    ):  # pylint: disable=unused-argument
+        """A route that could not reach FalkorDB is a 503, not a 500.
+
+        The whole point of separating the browser login from the database is
+        that an outage stops looking like a broken login. That only holds if the
+        routes that genuinely need the graph say "retry" rather than "we are
+        broken" — or worse, "you are logged out".
+        """
+        report_error(request, exc)
+        logging.warning(
+            "Backend unreachable for %s %s: %s", request.method, request.url.path, exc
+        )
+        return JSONResponse(
+            {"detail": "Service temporarily unavailable - please retry"},
+            status_code=503,
+        )
+
+    # add_exception_handler keys on a single class, so register the tuple's
+    # members one at a time.
+    for _transient in TRANSIENT_BACKEND_ERRORS:
+        app.add_exception_handler(_transient, handle_transient_backend_error)
+    @app.exception_handler(Exception)
+    async def handle_unexpected_error(
+        request: Request, exc: Exception
+    ):  # pylint: disable=unused-argument
+        """Report an unhandled error, then let FastAPI answer it as usual."""
+        report_error(request, exc)
+        logging.exception(
+            "Unhandled error for %s %s", request.method, request.url.path
+        )
+
+        # If it's an HTTPException, re-raise so FastAPI handles it properly
+        if isinstance(exc, HTTPException):
+            raise exc
+
+        # Preserve the existing FastAPI 500 response behavior.
+        raise exc
+
+    # Serve React app for all non-API routes (SPA catch-all)
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_react_app(full_path: str):  # pylint: disable=unused-argument
+        """Serve the React app for all routes not handled by API endpoints."""
+        # Serve index.html for the React SPA
+        index_path = os.path.join(dist_path, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return JSONResponse({"error": "React app not found"}, status_code=404)
+
+    return app

@@ -1,0 +1,820 @@
+"""PostgreSQL loader for loading database schemas into FalkorDB graphs."""
+
+import contextlib
+import re
+import datetime
+import decimal
+import logging
+from typing import AsyncGenerator, Dict, Any, List, Tuple
+from urllib.parse import urlparse, parse_qs, unquote
+
+import psycopg2
+from psycopg2 import sql
+import tqdm
+
+from api.config import Config
+from api.loaders.base_loader import BaseLoader  # pylint: disable=import-error
+from api.loaders.deadline import deadline_guard
+from api.loaders.graph_loader import load_to_graph  # pylint: disable=import-error
+from api.loaders.introspection import run_introspection
+
+# A real ``-c statement_timeout=<value>`` directive, case-insensitive (GUC
+# names are), capturing an optionally quoted value that may carry a unit.
+# ``tcp_user_timeout`` is a libpq 12+ connection parameter; older libpq
+# rejects unknown keywords outright, so probe once rather than assume.
+_TCP_USER_TIMEOUT_SUPPORTED = psycopg2.extensions.libpq_version() >= 120000
+
+_STATEMENT_TIMEOUT_RE = re.compile(
+    # PostgreSQL accepts both directive forms in an options string:
+    # ``-c name=value`` and ``--name=value``, the latter also with hyphens in
+    # place of underscores. GUC names are case-insensitive. Missing a form
+    # leaves it in the string, where it either overrides our bound or, if ours
+    # wins, silently loosens a stricter request.
+    r"(?i)(?:^|\s)(?:-c\s*|--)statement[-_]timeout\s*=\s*"
+    r"('[^']*'|\"[^\"]*\"|\S*)"
+)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+
+class PostgreSQLQueryError(Exception):
+    """Exception raised when PostgreSQL query execution fails."""
+
+
+class PostgreSQLConnectionError(Exception):
+    """Exception raised when PostgreSQL connection fails."""
+
+
+class PostgresLoader(BaseLoader):
+    """
+    Loader for PostgreSQL databases that connects and extracts schema information.
+    """
+
+    # DDL operations that modify database schema  # pylint: disable=duplicate-code
+    SCHEMA_MODIFYING_OPERATIONS = {
+        'CREATE', 'ALTER', 'DROP', 'RENAME', 'TRUNCATE'
+    }
+
+    # More specific patterns for schema-affecting operations
+    SCHEMA_PATTERNS = [  # pylint: disable=duplicate-code
+        r'^\s*CREATE\s+TABLE',
+        r'^\s*CREATE\s+INDEX',
+        r'^\s*CREATE\s+UNIQUE\s+INDEX',
+        r'^\s*ALTER\s+TABLE',
+        r'^\s*DROP\s+TABLE',
+        r'^\s*DROP\s+INDEX',
+        r'^\s*RENAME\s+TABLE',
+        r'^\s*TRUNCATE\s+TABLE',
+        r'^\s*CREATE\s+VIEW',
+        r'^\s*DROP\s+VIEW',
+        r'^\s*CREATE\s+SCHEMA',
+        r'^\s*DROP\s+SCHEMA',
+    ]
+
+    @staticmethod
+    def _execute_sample_query(
+        cursor: Any, table_name: str, col_name: str, sample_size: int = 3
+    ) -> List[Any]:
+        """
+        Execute query to get random sample values for a column.
+        PostgreSQL implementation using ORDER BY RANDOM() for random sampling.
+        """
+        query = sql.SQL("""
+            SELECT {col}
+            FROM (
+                SELECT DISTINCT {col}
+                FROM {table}
+                WHERE {col} IS NOT NULL
+            ) AS distinct_vals
+            ORDER BY RANDOM()
+            LIMIT %s;
+        """).format(
+            col=sql.Identifier(col_name),
+            table=sql.Identifier(table_name)
+        )
+        cursor.execute(query, (sample_size,))
+        sample_results = cursor.fetchall()
+        return [row[0] for row in sample_results if row[0] is not None]
+
+    @staticmethod
+    def _serialize_value(value):
+        """
+        Convert non-JSON serializable values to JSON serializable format.
+
+        Args:
+            value: The value to serialize
+
+        Returns:
+            JSON serializable version of the value
+        """
+        if isinstance(value, (datetime.date, datetime.datetime)):
+            return value.isoformat()
+        if isinstance(value, datetime.time):
+            return value.isoformat()
+        if isinstance(value, decimal.Decimal):
+            return float(value)
+        if value is None:
+            return None
+        return value
+
+    @staticmethod
+    def parse_schema_from_url(connection_url: str) -> str:
+        """
+        Parse the search_path from the connection URL's options parameter.
+
+        The options parameter follows PostgreSQL's libpq format:
+        postgresql://user:pass@host:port/db?options=-csearch_path%3Dschema_name
+
+        Args:
+            connection_url: PostgreSQL connection URL
+
+        Returns:
+            The first schema from search_path, or 'public' if not specified
+        """
+        try:
+            parsed = urlparse(connection_url)
+            query_params = parse_qs(parsed.query)
+
+            options = query_params.get('options', [])
+            if not options:
+                return 'public'
+
+            options_str = unquote(options[0])
+
+            # Parse -c search_path=value from options
+            # Format can be: -csearch_path=schema or -c search_path=schema
+            # Match comma-separated schema tokens (supports spaces after commas).
+            match = re.search(r'-c\s*search_path\s*=\s*([^\s,]+(?:\s*,\s*[^\s,]+)*)', options_str, re.IGNORECASE)
+            if match:
+                search_path = match.group(1)
+                schemas = search_path.split(',')
+                for s in schemas:
+                    s = s.strip().strip('"\'')
+                    if s and s != '$user':
+                        return s
+                return 'public'
+
+            return 'public'
+
+        except Exception:  # pylint: disable=broad-exception-caught
+            return 'public'
+
+    @staticmethod
+    def _statement_timeout_ms(raw: str):
+        """Normalise a ``statement_timeout`` value to milliseconds.
+
+        PostgreSQL accepts more than plain decimal digits: an optional sign, a
+        hexadecimal (``0x``), octal (``0o`` or a bare leading zero) or binary
+        (``0b``) integer, and an optional unit (``us``, ``ms``, ``s``, ``min``,
+        ``h``, ``d``), the whole thing possibly quoted. Only understanding
+        decimals meant `077777` (octal, 32.767s) and `0x10` (16ms) were treated
+        as unparseable or as decimals and then replaced by the ceiling — which
+        *loosened* a stricter request. Returns ``None`` when the value is not
+        something we can compare, in which case the ceiling applies.
+        """
+        value = raw.strip().strip('"\'')
+        match = re.fullmatch(
+            r"(?i)\s*([+-]?)\s*"                    # optional sign
+            r"("
+            r"0[xX][0-9a-fA-F_]+|0[oO][0-7_]+|0[bB][01_]+"   # radix-prefixed
+            r"|(?:\d[\d_]*\.?\d*|\.\d+)(?:[eE][+-]?\d+)?"  # decimal, incl.
+            r")"                                     # ".5", "5." and "5e3"
+            r"\s*(us|ms|s|min|h|d)?\s*",            # optional unit
+            value,
+        )
+        if not match:
+            return None
+
+        sign, digits, unit = match.group(1), match.group(2).replace("_", ""), match.group(3)
+        try:
+            if digits[:2].lower() in ("0x", "0o", "0b"):
+                amount = float(int(digits, 0))
+            elif any(ch in digits for ch in ".eE"):
+                # Real syntax (".5", "5.", "5e3") is never octal.
+                amount = float(digits)
+            elif len(digits) > 1 and digits.startswith("0"):
+                # A bare leading zero is octal to PostgreSQL, not decimal.
+                amount = float(int(digits, 8))
+            else:
+                amount = float(digits)
+        except ValueError:
+            return None
+
+        if sign == "-":
+            return None                              # negative disables nothing useful
+        factors = {
+            "us": 0.001, "ms": 1, "s": 1000,
+            "min": 60_000, "h": 3_600_000, "d": 86_400_000,
+        }
+        milliseconds = amount * factors[(unit or "ms").lower()]
+        if milliseconds <= 0:
+            return None
+        # Round up so a sub-millisecond request (e.g. ``500us``) is honoured as
+        # the strictest representable bound rather than truncated to 0 and
+        # discarded, which would silently loosen it to the ceiling.
+        return max(1, int(milliseconds))
+
+    @staticmethod
+    def _introspect_schema(connection_url: str, schema: str):
+        """Connect, introspect and close — all inside one worker thread.
+
+        Everything touching the driver lives here so the connection and cursor
+        are created, used and closed by the same thread. Closing them from the
+        event loop instead (in the generator's ``finally``) can run while an
+        offloaded introspection is still using them, because cancelling a
+        ``to_thread`` call does not stop the thread it is running in: the
+        result is two threads on one connection. Keeping cleanup in the worker
+        also means a client disconnect cannot leak the connection.
+
+        Only the connect is time-bounded: introspecting a very large schema can
+        legitimately outlast DB_STATEMENT_TIMEOUT, which is sized for user
+        queries.
+        """
+        conn = None
+        cursor = None
+        try:
+            # A server-side deadline for the introspection itself, larger
+            # than the user-query ceiling but still bounded: cancelling the
+            # awaiting task cannot stop this thread, so a stalled database
+            # would otherwise hold the session and the worker indefinitely.
+            # Shares the connect-keyword builder with query execution: a raw
+            # ``options=`` here would replace every URL-supplied option, and
+            # dropping something like ``-c role=app_reader`` would silently
+            # introspect with more privilege than the connection was granted.
+            conn = psycopg2.connect(
+                connection_url,
+                **PostgresLoader._connect_kwargs(
+                    connection_url, Config.DB_SCHEMA_TIMEOUT
+                ),
+            )
+            cursor = conn.cursor()
+
+            # The server-side deadline only fires while the backend is
+            # answering; this one fires regardless, so a stalled peer cannot
+            # hold the worker past the budget.
+            with deadline_guard(
+                conn, Config.DB_SCHEMA_TIMEOUT, "schema introspection"
+            ):
+                # Set the session search_path to the parsed schema so
+                # unqualified table references resolve correctly.
+                cursor.execute(
+                    sql.SQL("SET search_path TO {}").format(sql.Identifier(schema))
+                )
+
+                entities = PostgresLoader.extract_tables_info(cursor, schema)
+                relationships = PostgresLoader.extract_relationships(cursor, schema)
+            return entities, relationships
+        finally:
+            # A raise from cleanup (e.g. on a socket the deadline guard shut
+            # down) must not mask the introspection error itself.
+            if cursor is not None:
+                with contextlib.suppress(Exception):
+                    cursor.close()
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+
+    @staticmethod
+    async def load(  # pylint: disable=arguments-differ
+        prefix: str,
+        connection_url: str,
+        db=None,
+    ) -> AsyncGenerator[tuple[bool, str], None]:
+        """
+        Load the graph data from a PostgreSQL database into the graph database.
+
+        Args:
+            connection_url: PostgreSQL connection URL in format:
+                        postgresql://username:password@host:port/database
+                        Optionally with schema via options parameter:
+                        postgresql://...?options=-csearch_path%3Dschema_name
+            db: Optional FalkorDB handle; falls back to the server singleton.
+
+        Returns:
+            Tuple[bool, str]: Success status and message
+        """
+        try:
+            # Parse schema from connection URL (defaults to 'public')
+            schema = PostgresLoader.parse_schema_from_url(connection_url)
+
+            # Extract database name from connection URL
+            db_name = connection_url.split('/')[-1]
+            if '?' in db_name:
+                db_name = db_name.split('?')[0]
+
+            yield True, "Extracting table information..."
+            entities, relationships = await run_introspection(
+                PostgresLoader._introspect_schema, connection_url, schema
+            )
+
+            yield True, "Loading data into graph..."
+            # Load data into graph
+            await load_to_graph(f"{prefix}_{db_name}", entities, relationships,
+                         db_name=db_name, db_url=connection_url, db=db)
+
+            yield True, (f"PostgreSQL schema loaded successfully. "
+                         f"Found {len(entities)} tables.")
+
+        except psycopg2.Error as e:
+            logging.error("PostgreSQL connection error: %s", e)
+            yield False, "Failed to connect to PostgreSQL database"
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logging.error("Error loading PostgreSQL schema: %s", e)
+            yield False, "Failed to load PostgreSQL database schema"
+
+    @staticmethod
+    def extract_tables_info(cursor: Any, schema: str = 'public') -> Dict[str, Any]:
+        """
+        Extract table and column information from PostgreSQL database.
+
+        Args:
+            cursor: Database cursor
+            schema: Database schema to extract tables from (default: 'public')
+
+        Returns:
+            Dict containing table information
+        """
+        entities = {}
+
+        # Get all tables in the specified schema
+        cursor.execute("""
+            SELECT table_name, table_comment
+            FROM information_schema.tables t
+            LEFT JOIN (
+                SELECT schemaname, tablename, description as table_comment
+                FROM pg_tables pt
+                JOIN pg_class pc ON pc.relname = pt.tablename
+                JOIN pg_namespace pn ON pn.oid = pc.relnamespace AND pn.nspname = pt.schemaname
+                JOIN pg_description pd ON pd.objoid = pc.oid AND pd.objsubid = 0
+                WHERE pt.schemaname = %s
+            ) tc ON tc.tablename = t.table_name
+            WHERE t.table_schema = %s
+            AND t.table_type = 'BASE TABLE'
+            ORDER BY t.table_name;
+        """, (schema, schema))
+
+        tables = cursor.fetchall()
+
+        for table_name, table_comment in tqdm.tqdm(tables, desc="Extracting table information"):
+            table_name = table_name.strip()
+
+            # Get column information for this table
+            columns_info = PostgresLoader.extract_columns_info(cursor, table_name, schema)
+
+            # Get foreign keys for this table
+            foreign_keys = PostgresLoader.extract_foreign_keys(cursor, table_name, schema)
+
+            # Generate table description
+            table_description = table_comment if table_comment else f"Table: {table_name}"
+
+            # Get column descriptions for batch embedding
+            col_descriptions = [col_info['description'] for col_info in columns_info.values()]
+
+            entities[table_name] = {
+                'description': table_description,
+                'columns': columns_info,
+                'foreign_keys': foreign_keys,
+                'col_descriptions': col_descriptions
+            }
+
+        return entities
+
+    @staticmethod
+    def extract_columns_info(cursor: Any, table_name: str, schema: str = 'public') -> Dict[str, Any]:
+        """
+        Extract column information for a specific table.
+
+        Args:
+            cursor: Database cursor
+            table_name: Name of the table
+            schema: Database schema (default: 'public')
+
+        Returns:
+            Dict containing column information
+        """
+        cursor.execute("""
+            SELECT
+                c.column_name,
+                c.data_type,
+                c.is_nullable,
+                c.column_default,
+                CASE
+                    WHEN pk.column_name IS NOT NULL THEN 'PRIMARY KEY'
+                    WHEN fk.column_name IS NOT NULL THEN 'FOREIGN KEY'
+                    ELSE 'NONE'
+                END as key_type,
+                COALESCE(pgd.description, '') as column_comment
+            FROM information_schema.columns c
+            LEFT JOIN (
+                SELECT ku.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage ku
+                    ON tc.constraint_name = ku.constraint_name
+                    AND tc.constraint_schema = ku.constraint_schema
+                WHERE tc.table_name = %s
+                AND tc.table_schema = %s
+                AND tc.constraint_type = 'PRIMARY KEY'
+            ) pk ON pk.column_name = c.column_name
+            LEFT JOIN (
+                SELECT ku.column_name
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage ku
+                    ON tc.constraint_name = ku.constraint_name
+                    AND tc.constraint_schema = ku.constraint_schema
+                WHERE tc.table_name = %s
+                AND tc.table_schema = %s
+                AND tc.constraint_type = 'FOREIGN KEY'
+            ) fk ON fk.column_name = c.column_name
+            LEFT JOIN pg_namespace pn ON pn.nspname = c.table_schema
+            LEFT JOIN pg_class pc ON pc.relname = c.table_name AND pc.relnamespace = pn.oid
+            LEFT JOIN pg_attribute pa ON pa.attrelid = pc.oid AND pa.attname = c.column_name
+            LEFT JOIN pg_description pgd ON pgd.objoid = pc.oid AND pgd.objsubid = pa.attnum
+            WHERE c.table_name = %s
+            AND c.table_schema = %s
+            ORDER BY c.ordinal_position;
+        """, (table_name, schema, table_name, schema, table_name, schema))
+
+        columns = cursor.fetchall()
+        columns_info = {}
+
+        for col_name, data_type, is_nullable, column_default, key_type, column_comment in columns:
+            col_name = col_name.strip()
+
+            # Generate column description
+            description_parts = []
+            if column_comment:
+                description_parts.append(column_comment)
+            else:
+                description_parts.append(f"Column {col_name} of type {data_type}")
+
+            if key_type != 'NONE':
+                description_parts.append(f"({key_type})")
+
+            if is_nullable == 'NO':
+                description_parts.append("(NOT NULL)")
+
+            if column_default:
+                description_parts.append(f"(Default: {column_default})")
+
+            # Extract sample values for the column (stored separately, not in description)
+            sample_values = PostgresLoader.extract_sample_values_for_column(
+                cursor, table_name, col_name
+            )
+
+            columns_info[col_name] = {
+                'type': data_type,
+                'null': is_nullable,
+                'key': key_type,
+                'description': ' '.join(description_parts),
+                'default': column_default,
+                'sample_values': sample_values
+            }
+
+
+        return columns_info
+
+    @staticmethod
+    def extract_foreign_keys(cursor: Any, table_name: str, schema: str = 'public') -> List[Dict[str, str]]:
+        """
+        Extract foreign key information for a specific table.
+
+        Args:
+            cursor: Database cursor
+            table_name: Name of the table
+            schema: Database schema (default: 'public')
+
+        Returns:
+            List of foreign key dictionaries
+        """
+        cursor.execute("""
+            SELECT
+                tc.constraint_name,
+                kcu.column_name,
+                ccu.table_name AS foreign_table_name,
+                ccu.column_name AS foreign_column_name
+            FROM information_schema.table_constraints AS tc
+            JOIN information_schema.key_column_usage AS kcu
+                ON tc.constraint_name = kcu.constraint_name
+                AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.constraint_column_usage AS ccu
+                ON ccu.constraint_name = tc.constraint_name
+                AND ccu.table_schema = tc.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY'
+            AND tc.table_name = %s
+            AND tc.table_schema = %s;
+        """, (table_name, schema))
+
+        foreign_keys = []
+        for constraint_name, column_name, foreign_table, foreign_column in cursor.fetchall():
+            foreign_keys.append({
+                'constraint_name': constraint_name.strip(),
+                'column': column_name.strip(),
+                'referenced_table': foreign_table.strip(),
+                'referenced_column': foreign_column.strip()
+            })
+
+        return foreign_keys
+
+    @staticmethod
+    def extract_relationships(cursor: Any, schema: str = 'public') -> Dict[str, List[Dict[str, str]]]:
+        """
+        Extract all relationship information from the database.
+
+        Args:
+            cursor: Database cursor
+            schema: Database schema (default: 'public')
+
+        Returns:
+            Dict containing relationship information
+        """
+        cursor.execute("""
+            SELECT
+                tc.table_name,
+                tc.constraint_name,
+                kcu.column_name,
+                ccu.table_name AS foreign_table_name,
+                ccu.column_name AS foreign_column_name
+            FROM information_schema.table_constraints AS tc
+            JOIN information_schema.key_column_usage AS kcu
+                ON tc.constraint_name = kcu.constraint_name
+                AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.constraint_column_usage AS ccu
+                ON ccu.constraint_name = tc.constraint_name
+                AND ccu.table_schema = tc.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY'
+            AND tc.table_schema = %s
+            ORDER BY tc.table_name, tc.constraint_name;
+        """, (schema,))
+
+        relationships = {}
+        for (table_name, constraint_name, column_name,
+             foreign_table, foreign_column) in cursor.fetchall():
+            table_name = table_name.strip()
+            constraint_name = constraint_name.strip()
+
+            if constraint_name not in relationships:
+                relationships[constraint_name] = []
+
+            relationships[constraint_name].append({
+                'from': table_name,
+                'to': foreign_table.strip(),
+                'source_column': column_name.strip(),
+                'target_column': foreign_column.strip(),
+                'note': f'Foreign key constraint: {constraint_name}'
+            })
+
+        return relationships
+
+    @staticmethod
+    def is_schema_modifying_query(sql_query: str) -> Tuple[bool, str]:
+        """
+        Check if a SQL query modifies the database schema.
+
+        Args:
+            sql_query: The SQL query to check
+
+        Returns:
+            Tuple of (is_schema_modifying, operation_type)
+        """
+        if not sql_query or not sql_query.strip():
+            return False, ""
+
+        # Clean and normalize the query
+        normalized_query = sql_query.strip().upper()
+
+        # Check for basic DDL operations
+        first_word = normalized_query.split()[0] if normalized_query.split() else ""
+        if first_word in PostgresLoader.SCHEMA_MODIFYING_OPERATIONS:
+            # Additional pattern matching for more precise detection
+            for pattern in PostgresLoader.SCHEMA_PATTERNS:
+                if re.match(pattern, normalized_query, re.IGNORECASE):
+                    return True, first_word
+
+            # If it's a known DDL operation but doesn't match specific patterns,
+            # still consider it schema-modifying (better safe than sorry)
+            return True, first_word
+
+        return False, ""
+
+    @staticmethod
+    async def refresh_graph_schema(graph_id: str, db_url: str, db=None) -> Tuple[bool, str]:
+        """
+        Refresh the graph schema by clearing existing data and reloading from the database.
+
+        Args:
+            graph_id: The graph ID to refresh
+            db_url: Database connection URL
+            db: Optional FalkorDB handle; falls back to the server singleton.
+
+        Returns:
+            Tuple of (success, message)
+        """
+        try:
+            logging.info("Schema modification detected. Refreshing graph schema.")
+
+            from api.core.db_resolver import resolve_db  # pylint: disable=import-outside-toplevel
+
+            # Clear existing graph data
+            # Drop current graph before reloading
+            graph = resolve_db(db).select_graph(graph_id)
+            await graph.delete()
+
+            # Extract prefix from graph_id (remove database name part)
+            # graph_id format is typically "prefix_database_name"
+            parts = graph_id.split('_')
+            if len(parts) >= 2:
+                # Reconstruct prefix by joining all parts except the last one
+                prefix = '_'.join(parts[:-1])
+            else:
+                prefix = graph_id
+
+            # Reuse the existing load method to reload the schema
+            success, message = await PostgresLoader.load(prefix, db_url, db=db)
+
+            if success:
+                logging.info("Graph schema refreshed successfully.")
+                return True, message
+
+            logging.error("Schema refresh failed")
+            return False, "Failed to reload schema"
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            # Log the error and return failure
+            logging.error("Error refreshing graph schema: %s", str(e))
+            error_msg = "Error refreshing graph schema"
+            logging.error(error_msg)
+            return False, error_msg
+
+    @staticmethod
+    def _execution_connect_kwargs(db_url: str) -> Dict[str, Any]:
+        """Connect keywords for executing a user query."""
+        return PostgresLoader._connect_kwargs(db_url, Config.DB_STATEMENT_TIMEOUT)
+
+    @staticmethod
+    def _connect_kwargs(db_url: str, statement_timeout_s: int) -> Dict[str, Any]:
+        """Connect keywords bounding one connection, in seconds.
+
+        Offloading execution to a thread keeps the event loop free, but only a
+        server-side ``statement_timeout`` bounds the query itself — a thread
+        blocked in a socket read cannot be cancelled from Python.
+
+        Keyword arguments override values in the DSN, so anything the URL
+        already specifies is merged rather than replaced: a bare ``options=``
+        would silently drop a URL-supplied ``search_path``.
+        """
+        url_params = parse_qs(urlparse(db_url).query)
+        url_options = url_params.get("options", [""])[0]
+        kwargs: Dict[str, Any] = {}
+
+        # The configured value is a maximum, not a default: a URL may tighten
+        # it but must not loosen it or switch it off. In libpq a timeout of 0
+        # means "no limit", which would let one query hold an uncancellable
+        # worker thread indefinitely.
+        #
+        # Every directive is removed and exactly one canonical bound appended.
+        # Leaving any in place is unsafe: libpq applies the last occurrence, so
+        # `statement_timeout=1000 ... statement_timeout=0` would end up
+        # unbounded. GUC names are case-insensitive, so an uppercase directive
+        # left behind would win over ours.
+        timeout_ms = statement_timeout_s * 1000
+        requested = [
+            ms for ms in (
+                PostgresLoader._statement_timeout_ms(raw)
+                for raw in _STATEMENT_TIMEOUT_RE.findall(url_options)
+            )
+            if ms is not None and ms > 0
+        ]
+        # Strictest wins, and never looser than the configured ceiling.
+        effective_ms = min([timeout_ms, *requested])
+
+        stripped = _STATEMENT_TIMEOUT_RE.sub(" ", url_options).strip()
+        options = f"{stripped} -c statement_timeout={effective_ms}".strip()
+        if options:
+            kwargs["options"] = options
+
+        url_connect_timeout = url_params.get("connect_timeout", [None])[0]
+        connect_timeout = Config.DB_CONNECT_TIMEOUT
+        if url_connect_timeout is not None:
+            try:
+                requested = int(url_connect_timeout)
+            except ValueError:
+                requested = 0
+            if 0 < requested <= connect_timeout:
+                connect_timeout = requested
+        kwargs["connect_timeout"] = connect_timeout
+
+        # A server-side statement_timeout only fires while the server is still
+        # talking to us. On a blackholed connection — packets dropped rather
+        # than refused — the client blocks in a socket read with no deadline,
+        # keeping the worker alive well past the configured bound. TCP-level
+        # limits are what terminate that, so the OS gives up instead.
+        # Clamped, not defaulted: ``tcp_user_timeout=0&keepalives=0`` in a URL
+        # would otherwise switch these off entirely. A URL may tighten
+        # tcp_user_timeout, never loosen or disable it.
+        if _TCP_USER_TIMEOUT_SUPPORTED:
+            url_tcp = url_params.get("tcp_user_timeout", [None])[0]
+            tcp_user_timeout = timeout_ms
+            if url_tcp is not None:
+                try:
+                    requested_ms = int(url_tcp)
+                except ValueError:
+                    requested_ms = 0
+                if 0 < requested_ms < tcp_user_timeout:
+                    tcp_user_timeout = requested_ms
+            kwargs["tcp_user_timeout"] = tcp_user_timeout
+        kwargs["keepalives"] = 1
+        kwargs["keepalives_idle"] = max(1, connect_timeout)
+        kwargs["keepalives_interval"] = max(1, connect_timeout)
+        kwargs["keepalives_count"] = 3
+        return kwargs
+
+    @staticmethod
+    def execute_sql_query(sql_query: str, db_url: str) -> List[Dict[str, Any]]:
+        """
+        Execute a SQL query on the PostgreSQL database and return the results.
+
+        Args:
+            sql_query: The SQL query to execute
+            db_url: PostgreSQL connection URL in format:
+                    postgresql://username:password@host:port/database
+
+        Returns:
+            List of dictionaries containing the query results
+        """
+        conn = None
+        cursor = None
+        try:
+            conn = psycopg2.connect(
+                db_url, **PostgresLoader._execution_connect_kwargs(db_url)
+            )
+            cursor = conn.cursor()
+
+            # One guard spans execute, fetch, commit and rollback: a peer that
+            # answers the query but stalls while returning rows or on the
+            # commit holds the worker just as effectively as one that stalls
+            # on the execute itself.
+            with deadline_guard(
+                conn, Config.DB_STATEMENT_TIMEOUT, "query execution"
+            ):
+                try:
+                    cursor.execute(sql_query)
+
+                    # Check if the query returns results (SELECT queries)
+                    if cursor.description is not None:
+                        # This is a SELECT query or similar that returns rows
+                        columns = [desc[0] for desc in cursor.description]
+                        results = cursor.fetchall()
+                        result_list = []
+                        for row in results:
+                            # Serialize each value to ensure JSON compatibility
+                            serialized_row = {
+                                columns[i]: PostgresLoader._serialize_value(row[i])
+                                for i in range(len(columns))
+                            }
+                            result_list.append(serialized_row)
+                    else:
+                        # This is an INSERT, UPDATE, DELETE, or other
+                        # non-SELECT query - return information about it
+                        affected_rows = cursor.rowcount
+                        sql_type = sql_query.strip().split()[0].upper()
+
+                        if sql_type in ['INSERT', 'UPDATE', 'DELETE']:
+                            result_list = [{
+                                "operation": sql_type,
+                                "affected_rows": affected_rows,
+                                "status": "success"
+                            }]
+                        else:
+                            # For other types of queries (CREATE, DROP, etc.)
+                            result_list = [{
+                                "operation": sql_type,
+                                "status": "success"
+                            }]
+
+                    # Commit the transaction for write operations
+                    conn.commit()
+                except Exception:
+                    # The rollback is a network round trip too, so it stays
+                    # inside the guard - and it is suppressed so it cannot
+                    # mask the error that got us here (after a deadline
+                    # shutdown it raises immediately on the dead socket).
+                    with contextlib.suppress(Exception):
+                        conn.rollback()
+                    raise
+
+            return result_list
+
+        except psycopg2.Error as e:
+            raise PostgreSQLConnectionError(f"PostgreSQL query execution error: {str(e)}") from e
+        except Exception as e:
+            raise PostgreSQLQueryError(f"Error executing SQL query: {str(e)}") from e
+        finally:
+            # Runs on a healthy connection or on one whose socket the guard
+            # already shut down; either way a raise from cleanup must not
+            # mask the real error.
+            if cursor is not None:
+                with contextlib.suppress(Exception):
+                    cursor.close()
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()

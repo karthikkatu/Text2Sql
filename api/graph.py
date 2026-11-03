@@ -1,0 +1,403 @@
+"""Module to handle the graph data loading into the database."""
+
+import asyncio
+import json
+import logging
+from itertools import combinations
+from typing import Any, Dict, List
+
+from pydantic import BaseModel
+
+from api.agents.utils import run_completion
+from api.config import Config
+from api.core.db_resolver import resolve_db
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# pylint: disable=broad-exception-caught
+
+class TableDescription(BaseModel):
+    """Table Description"""
+
+    name: str
+    description: str
+
+
+class ColumnDescription(BaseModel):
+    """Column Description"""
+
+    name: str
+    description: str
+
+
+class Descriptions(BaseModel):
+    """List of tables"""
+
+    tables_descriptions: list[TableDescription]
+    columns_descriptions: list[ColumnDescription]
+
+
+async def get_db_description(graph_id: str, db=None) -> tuple[str, str]:
+    """Get the database description from the graph."""
+    graph = resolve_db(db).select_graph(graph_id)
+    query_result = await graph.query(
+        """
+        MATCH (d:Database)
+        RETURN d.description, d.url
+        """
+    )
+
+    if not query_result.result_set:
+        return ("No description available for this database.",
+                "No URL available for this database.")
+
+    return (query_result.result_set[0][0],
+            query_result.result_set[0][1])  # Return the first result's description
+
+
+async def get_user_rules(graph_id: str, db=None) -> str:
+    """Get the user rules from the graph."""
+    graph = resolve_db(db).select_graph(graph_id)
+    query_result = await graph.query(
+        """
+        MATCH (d:Database)
+        RETURN d.user_rules
+        """
+    )
+
+    if not query_result.result_set or not query_result.result_set[0][0]:
+        return ""
+
+    return query_result.result_set[0][0]
+
+
+async def set_user_rules(graph_id: str, user_rules: str, db=None) -> None:
+    """Set the user rules in the graph."""
+    graph = resolve_db(db).select_graph(graph_id)
+    await graph.query(
+        """
+        MERGE (d:Database)
+        SET d.user_rules = $user_rules
+        """,
+        {"user_rules": user_rules}
+    )
+
+async def _query_graph(
+    graph,
+    query: str,
+    params: Dict[str, Any] = None,
+    timeout: int = 300
+) -> List[Any]:
+    """
+    Run a graph query asynchronously and return the result set.
+
+    Args:
+        graph: The graph database instance.
+        query: The query string to execute.
+        params: Optional parameters for the query.
+        timeout: Query timeout in seconds.
+
+    Returns:
+        The result set from the query.
+    """
+    result = await graph.query(query, params or {}, timeout=timeout)
+    return result.result_set
+
+async def _find_tables(
+    graph,
+    embeddings: List[List[float]]
+) -> List[Dict[str, Any]]:
+    """
+    Find tables based on pre-computed embeddings.
+
+    Args:
+        graph: The graph database instance.
+        embeddings: Pre-computed embeddings for the table descriptions.
+
+    Returns:
+        List of matching table information.
+    """
+    query = """
+        CALL db.idx.vector.queryNodes('Table','embedding',3,vecf32($embedding))
+        YIELD node, score
+        MATCH (node)-[:BELONGS_TO]-(columns)
+        RETURN node.name, node.description, node.foreign_keys, collect({
+            columnName: columns.name,
+            description: columns.description,
+            dataType: columns.type,
+            keyType: columns.key,
+            nullable: columns.nullable
+        })
+    """
+
+    tasks = [
+        _query_graph(graph, query, {"embedding": embedding})
+        for embedding in embeddings
+    ]
+
+    results = await asyncio.gather(*tasks)
+    return [row for rows in results for row in rows]
+
+
+async def _find_tables_by_columns(
+    graph,
+    embeddings: List[List[float]]
+) -> List[Dict[str, Any]]:
+    """
+    Find tables based on pre-computed embeddings for column descriptions.
+
+    Args:
+        graph: The graph database instance.
+        embeddings: Pre-computed embeddings for the column descriptions.
+
+    Returns:
+        List of matching table information.
+    """
+    query = """
+        CALL db.idx.vector.queryNodes('Column','embedding',3,vecf32($embedding))
+        YIELD node, score
+        MATCH (node)-[:BELONGS_TO]-(table)-[:BELONGS_TO]-(columns)
+        RETURN
+            table.name,
+            table.description,
+            table.foreign_keys,
+            collect({
+                columnName: columns.name,
+                description: columns.description,
+                dataType: columns.type,
+                keyType: columns.key,
+                nullable: columns.nullable
+            })
+    """
+
+    tasks = [
+        _query_graph(graph, query, {"embedding": embedding})
+        for embedding in embeddings
+    ]
+
+    results = await asyncio.gather(*tasks)
+    return [row for rows in results for row in rows]
+
+
+async def _find_tables_sphere(
+    graph,
+    tables: List[str]
+) -> List[Dict[str, Any]]:
+    """
+    Find tables in the sphere of influence of given tables.
+
+    Args:
+        graph: The graph database instance.
+        tables: List of table names to find connections for.
+
+    Returns:
+        List of connected table information.
+    """
+    query = """
+        MATCH (node:Table {name: $name})
+        MATCH (node)-[:BELONGS_TO]-(column)-[:REFERENCES]-()-[:BELONGS_TO]-(table_ref)
+        WITH table_ref
+        MATCH (table_ref)-[:BELONGS_TO]-(columns)
+        RETURN table_ref.name, table_ref.description, table_ref.foreign_keys,
+               collect({
+                   columnName: columns.name,
+                   description: columns.description,
+                   dataType: columns.type,
+                   keyType: columns.key,
+                   nullable: columns.nullable
+               })
+    """
+    try:
+        tasks = [_query_graph(graph, query, {"name": name}) for name in tables]
+        results = await asyncio.gather(*tasks)
+    except Exception as e:
+        logging.error("Error finding tables in sphere: %s", e)
+        results = []
+
+    return [row for rows in results for row in rows]
+
+
+async def _find_connecting_tables(
+    graph,
+    table_names: List[str]
+) -> List[Dict[str, Any]]:
+    """
+    Find all tables that form connections between pairs of tables.
+
+    Args:
+        graph: The graph database instance.
+        table_names: List of table names to find connections between.
+
+    Returns:
+        List of connecting table information.
+    """
+    pairs = [list(pair) for pair in combinations(table_names, 2)]
+    if not pairs:
+        return []
+
+    query = """
+    UNWIND $pairs AS pair
+    MATCH (a:Table {name: pair[0]})
+    MATCH (b:Table {name: pair[1]})
+    WITH a, b
+    MATCH p = allShortestPaths((a)-[*..6]-(b))
+    UNWIND nodes(p) AS path_node
+    WITH DISTINCT path_node
+    WHERE 'Table' IN labels(path_node) OR
+          ('Column' IN labels(path_node) AND path_node.key_type = 'PRI')
+    WITH path_node,
+         'Table' IN labels(path_node) AS is_table,
+         'Column' IN labels(path_node) AND path_node.key_type = 'PRI' AS is_pri_column
+    OPTIONAL MATCH (path_node)-[:BELONGS_TO]->(parent_table:Table)
+    WHERE is_pri_column
+    WITH CASE
+           WHEN is_table THEN path_node
+           WHEN is_pri_column THEN parent_table
+           ELSE null
+         END AS target_table
+    WHERE target_table IS NOT NULL
+    WITH DISTINCT target_table
+    MATCH (col:Column)-[:BELONGS_TO]->(target_table)
+    WITH target_table,
+         collect({
+            columnName: col.name,
+            description: col.description,
+            dataType: col.type,
+            keyType: col.key,
+            nullable: col.nullable
+         }) AS columns
+    RETURN target_table.name, target_table.description, target_table.foreign_keys, columns
+    """
+    try:
+        result = await _query_graph(graph, query, {"pairs": pairs}, timeout=500)
+    except Exception as e:
+        logging.error("Error finding connecting tables: %s", e)
+        result = []
+
+    return result
+
+
+async def find( # pylint: disable=too-many-locals
+    graph_id: str,
+    queries_history: List[str],
+    db_description: str = None,
+    db=None,
+) -> List[List[Any]]:
+    """
+    Find the tables and columns relevant to the user's query.
+
+    Args:
+        graph_id: The identifier for the graph database.
+        queries_history: List of previous queries, with the last one being current.
+        db_description: Optional description of the database.
+        db: Optional FalkorDB handle; falls back to the server singleton.
+
+    Returns:
+        Combined list of relevant tables.
+    """
+    graph = resolve_db(db).select_graph(graph_id)
+    user_query = queries_history[-1]
+    previous_queries = queries_history[:-1]
+
+    logging.info("Calling LLM to find relevant tables/columns for query")
+
+    # Both this LLM call and the embedding call below are synchronous network
+    # calls, and this coroutine is launched with ``asyncio.create_task``. Run
+    # directly they would block the event loop before the first await, which
+    # makes that "concurrency" illusory and prevents any stream from flushing
+    # keepalives — the exact point where the 2026-07-29 demo queries stalled.
+    completion_content = await asyncio.to_thread(
+        run_completion,
+        [
+            {
+                "role": "system",
+                "content": Config.FIND_SYSTEM_PROMPT.format(
+                    db_description=db_description
+                )
+            },
+            {
+                "role": "user",
+                "content": json.dumps({
+                    "previous_user_queries": previous_queries,
+                    "user_query": user_query
+                })
+            },
+        ],
+        label="find.tables",
+        response_format=Descriptions,
+        temperature=0,
+    )
+
+    json_data = json.loads(completion_content)
+    descriptions = Descriptions(**json_data)
+    table_texts = [desc.description for desc in descriptions.tables_descriptions]
+    column_texts = [desc.description for desc in descriptions.columns_descriptions]
+    if not table_texts and not column_texts:
+        # Some models answer a perfectly answerable question with two empty
+        # lists. Returning no tables then leaves the analysis step looking at
+        # an empty schema, so it reports the schema as "not provided". The
+        # question itself is a usable search text for both indexes.
+        logging.warning(
+            "find: model returned no table or column descriptions; "
+            "searching with the question text instead"
+        )
+        table_texts, column_texts = [user_query], [user_query]
+    descriptions_text = table_texts + column_texts
+
+    # Off-loop for the same reason as the completion above.
+    embedding_results = await asyncio.to_thread(
+        Config.EMBEDDING_MODEL.embed, descriptions_text,
+    )
+
+    # Split embeddings back into table and column embeddings
+    table_embeddings = embedding_results[:len(table_texts)]
+    column_embeddings = embedding_results[len(table_texts):]
+
+    async def _no_tables():
+        return []
+
+    # Execute the main embedding-based searches in parallel. Each result is
+    # kept under its own name: a model that describes only columns (or only
+    # tables) must not lose the half it did describe.
+    tables_des, tables_by_columns_des = await asyncio.gather(
+        _find_tables(graph, table_embeddings) if table_embeddings else _no_tables(),
+        _find_tables_by_columns(graph, column_embeddings) if column_embeddings else _no_tables(),
+    )
+
+    # Seed the neighbourhood searches from the tables matched directly, or from
+    # the column matches when no table description was produced.
+    found_table_names = [t[0] for t in (tables_des or tables_by_columns_des)]
+
+    # Only run sphere and connecting searches if we found tables
+    if found_table_names:
+        secondary_tasks = [
+            _find_tables_sphere(graph, found_table_names),
+            _find_connecting_tables(graph, found_table_names)
+        ]
+        tables_by_sphere, tables_by_route = await asyncio.gather(*secondary_tasks)
+    else:
+        tables_by_sphere, tables_by_route = [], []
+
+    combined_tables = _get_unique_tables(
+        tables_des + tables_by_columns_des + tables_by_route + tables_by_sphere
+    )
+
+    return combined_tables
+
+def _get_unique_tables(tables_list):
+    # Dictionary to store unique tables with the table name as the key
+    unique_tables = {}
+
+    for table_info in tables_list:
+        table_name = table_info[0]  # The first element is the table name
+
+        # Only add if this table name hasn't been seen before
+        try:
+            if table_name not in unique_tables:
+                table_info[3] = [dict(od) for od in table_info[3]]
+                table_info[2] = "Foreign keys: " + table_info[2]
+                unique_tables[table_name] = table_info
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            print(f"Error: {table_info}, Exception: {e}")
+
+    # Return the values (the unique table info lists)
+    return list(unique_tables.values())
