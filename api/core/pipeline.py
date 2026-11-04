@@ -60,10 +60,10 @@ DESTRUCTIVE_OPS = frozenset(_DESTRUCTIVE_VERBS)
 
 # Contextvar-scoped task sink. SDK code sets this for the duration of a
 # query/execute call so ``save_memory_background`` (fire-and-forget) can
-# be awaited at ``QueryWeaver.close()`` time. Unset in server contexts,
+# be awaited at ``SQLTexter.close()`` time. Unset in server contexts,
 # where the event loop outlives the query and tasks drain naturally.
 background_tasks_var: contextvars.ContextVar[Optional[set]] = (
-    contextvars.ContextVar("queryweaver_background_tasks", default=None)
+    contextvars.ContextVar("sqltexter_background_tasks", default=None)
 )
 
 # ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ def get_database_type_and_loader(
         if sdk_only:
             raise InvalidArgumentError(
                 "Snowflake requires the [server] extra: "
-                "pip install queryweaver[server]"
+                "pip install sqltexter[server]"
             )
         # Lazy-import: snowflake-connector-python is in the [server] extra,
         # not in the core SDK install.
@@ -488,7 +488,7 @@ def save_memory_background(  # pylint: disable=too-many-arguments,too-many-posit
     error-logging callbacks so a failure to save never blocks the response.
 
     When ``task_sink`` is given, each scheduled task is added to it and
-    auto-removed on completion. The SDK uses this so ``QueryWeaver.close()``
+    auto-removed on completion. The SDK uses this so ``SQLTexter.close()``
     can await in-flight memory writes before disconnecting the pool.
     """
 

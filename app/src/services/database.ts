@@ -145,7 +145,7 @@ export class DatabaseService {
       console.log('Backend not available for schema upload - demo mode only');
       // Check if it's a network error (backend not running)
       if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        throw new Error('Backend server is not running. Please start the QueryWeaver backend to upload schemas.');
+        throw new Error('Backend server is not running. Please start the SQLTexter backend to upload schemas.');
       }
       throw error;
     }
@@ -221,7 +221,7 @@ export class DatabaseService {
       console.log('Backend not available for database connection - demo mode only');
       // Check if it's a network error (backend not running)
       if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        throw new Error('Backend server is not running. Please start the QueryWeaver backend to connect to databases.');
+        throw new Error('Backend server is not running. Please start the SQLTexter backend to connect to databases.');
       }
       throw error;
     }
@@ -280,7 +280,7 @@ export class DatabaseService {
       console.log('Backend not available for database connection - demo mode only');
       // Check if it's a network error (backend not running)
       if (error instanceof TypeError && error.message === 'Failed to fetch') {
-        throw new Error('Backend server is not running. Please start the QueryWeaver backend to connect to databases.');
+        throw new Error('Backend server is not running. Please start the SQLTexter backend to connect to databases.');
       }
       throw error;
     }

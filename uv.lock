@@ -2482,7 +2482,7 @@ wheels = [
 ]
 
 [[package]]
-name = "queryweaver"
+name = "sqltexter"
 source = { editable = "." }
 dependencies = [
     { name = "falkordb", extra = ["hiredis"] },

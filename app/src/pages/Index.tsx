@@ -36,7 +36,7 @@ const Index = () => {
   const [useMemory] = useState(() => {
     // Load from localStorage on init, default to true
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('queryweaver_use_memory');
+      const saved = localStorage.getItem('sqltexter_use_memory');
       return saved === null ? true : saved === 'true';
     }
     return true;
@@ -44,7 +44,7 @@ const Index = () => {
   const [useRulesFromDatabase] = useState(() => {
     // Load from localStorage on init, default to false
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('queryweaver_use_rules_from_database');
+      const saved = localStorage.getItem('sqltexter_use_rules_from_database');
       return saved === null ? false : saved === 'true';
     }
     return false;
@@ -119,7 +119,7 @@ const Index = () => {
 
   // Fetch GitHub stars
   useEffect(() => {
-    fetch('https://api.github.com/repos/FalkorDB/QueryWeaver')
+    fetch('https://api.github.com/repos/karthikkatu/Text2Sql')
       .then(response => response.json())
       .then(data => {
         if (typeof data.stargazers_count === 'number') {
@@ -377,7 +377,7 @@ const Index = () => {
           <div className="hidden md:flex items-center justify-between p-6">
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-3">
-                <img src="/icons/queryweaver.svg" alt="QueryWeaver" style={{ height: '3rem', width: 'auto' }} data-testid="logo" />
+                <img src="/icons/sqltexter.svg" alt="SQLTexter" style={{ height: '3rem', width: 'auto' }} data-testid="logo" />
                 <span className="text-muted-foreground">|</span>
                 <p className="text-sm text-muted-foreground">Graph-Powered Text-to-SQL</p>
               </div>
@@ -394,11 +394,11 @@ const Index = () => {
               )}
               {/* GitHub Stars Link */}
               <a
-                href="https://github.com/FalkorDB/QueryWeaver"
+                href="https://github.com/karthikkatu/Text2Sql"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-card hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-                title="View QueryWeaver on GitHub"
+                title="View SQLTexter on GitHub"
                 data-testid="github-repo-link"
               >
                 <svg 
@@ -467,11 +467,11 @@ const Index = () => {
                 >
                   {sidebarCollapsed ? <PanelLeft className="h-5 w-5" /> : <X className="h-5 w-5" />}
                 </button>
-                <img src="/icons/queryweaver.svg" alt="QueryWeaver" className="h-8" data-testid="logo" />
+                <img src="/icons/sqltexter.svg" alt="SQLTexter" className="h-8" data-testid="logo" />
               </div>
               <div className="flex items-center gap-2">
                 <a
-                  href="https://github.com/FalkorDB/QueryWeaver"
+                  href="https://github.com/karthikkatu/Text2Sql"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-1 px-2 py-1 rounded bg-card hover:bg-muted transition-colors text-muted-foreground"

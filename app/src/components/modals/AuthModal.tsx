@@ -42,7 +42,7 @@ const AuthModal = ({ open, onOpenChange }: AuthModalProps) => {
       <DialogContent className="sm:max-w-[450px] bg-card border-border">
         <DialogHeader className="text-center">
           <DialogTitle className="text-xl font-semibold text-card-foreground">
-            Welcome to QueryWeaver
+            Welcome to SQLTexter
           </DialogTitle>
           <DialogDescription className="text-sm text-muted-foreground">
             Sign in to save your databases and queries

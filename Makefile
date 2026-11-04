@@ -7,7 +7,7 @@ help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 install: ## Install dependencies
-	uv sync
+	uv sync --all-extras
 	npm ci
 	npm ci --prefix ./app
 
@@ -109,6 +109,6 @@ test-sdk: ## Run SDK integration tests (requires docker-test-services)
 	uv run python -m pytest tests/test_sdk/ -v
 
 test-sdk-quick: ## Run SDK tests without LLM (models and connection only)
-	uv run python -m pytest tests/test_sdk/test_queryweaver.py::TestModels tests/test_sdk/test_queryweaver.py::TestQueryWeaverInit -v
+	uv run python -m pytest tests/test_sdk/test_sqltexter.py::TestModels tests/test_sdk/test_sqltexter.py::TestSQLTexterInit -v
 
 test-all: test-unit test-sdk test-e2e ## Run all tests

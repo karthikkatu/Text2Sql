@@ -1,1 +1,1 @@
-"""E2E tests package for QueryWeaver."""
+"""E2E tests package for SQLTexter."""

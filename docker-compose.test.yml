@@ -1,4 +1,4 @@
-# Test services for QueryWeaver SDK integration tests
+# Test services for SQLTexter SDK integration tests
 # Usage: docker compose -f docker-compose.test.yml up -d
 
 services:

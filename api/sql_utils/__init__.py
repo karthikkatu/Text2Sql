@@ -1,4 +1,4 @@
-"""Utility modules for QueryWeaver API."""
+"""Utility modules for SQLTexter API."""
 
 from .sql_sanitizer import SQLIdentifierQuoter, DatabaseSpecificQuoter
 

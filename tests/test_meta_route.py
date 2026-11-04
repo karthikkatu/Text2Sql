@@ -18,7 +18,7 @@ def test_version_returns_200_with_name_and_version():
     response = _client().get("/version")
     assert response.status_code == 200
     body = response.json()
-    assert body["name"] == "queryweaver"
+    assert body["name"] == "sqltexter"
     assert isinstance(body["version"], str)
     assert body["version"]  # non-empty
 

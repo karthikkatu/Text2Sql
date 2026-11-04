@@ -1,4 +1,4 @@
-"""End-to-end QueryWeaver SDK example against the e-commerce schema.
+"""End-to-end SQLTexter SDK example against the e-commerce schema.
 
 Connects to the demo PostgreSQL database (loaded from
 ``ecommerce_example.sql``), introspects the schema into FalkorDB, runs a
@@ -12,14 +12,14 @@ Required environment variables:
                             GEMINI_API_KEY, ANTHROPIC_API_KEY, COHERE_API_KEY)
 
 Required (for the demo Postgres loaded from ``ecommerce_example.sql``):
-    DEMO_POSTGRES_URL    e.g. postgresql://USER:PASSWORD@localhost:5432/queryweaver_demo
+    DEMO_POSTGRES_URL    e.g. postgresql://USER:PASSWORD@localhost:5432/sqltexter_demo
 """
 
 import asyncio
 import os
 from urllib.parse import urlparse
 
-from queryweaver import QueryRequest, QueryWeaver
+from sqltexter import QueryRequest, SQLTexter
 
 
 def _redact_url(url: str) -> str:
@@ -38,7 +38,7 @@ FALKORDB_URL = os.environ.get("FALKORDB_URL", "redis://localhost:6379")
 if not POSTGRES_URL:
     raise SystemExit(
         "Set DEMO_POSTGRES_URL, e.g. "
-        "postgresql://USER:PASSWORD@localhost:5432/queryweaver_demo"
+        "postgresql://USER:PASSWORD@localhost:5432/sqltexter_demo"
     )
 
 
@@ -50,14 +50,14 @@ def _print_rows(rows, limit=10):
 
 
 async def main() -> None:
-    async with QueryWeaver(falkordb_url=FALKORDB_URL, user_id="demo") as qw:
+    async with SQLTexter(falkordb_url=FALKORDB_URL, user_id="demo") as client:
         print(f"Connecting to PostgreSQL at {_redact_url(POSTGRES_URL)}")
-        conn = await qw.connect_database(POSTGRES_URL)
+        conn = await client.connect_database(POSTGRES_URL)
         if not conn.success:
             raise SystemExit(f"connect failed: {conn.message}")
         print(f"  connected; database_id={conn.database_id}\n")
 
-        schema = await qw.get_schema(conn.database_id)
+        schema = await client.get_schema(conn.database_id)
         print(f"Schema: {len(schema.nodes)} tables, {len(schema.links)} relationships\n")
 
         # 1) One-shot query
@@ -66,7 +66,7 @@ async def main() -> None:
             "sorted by total spending descending"
         )
         print(f"Q: {question}")
-        result = await qw.query(conn.database_id, question)
+        result = await client.query(conn.database_id, question)
         print(f"\n  SQL: {result.sql_query}")
         print(f"  Rows ({len(result.results)}):")
         _print_rows(result.results)
@@ -79,7 +79,7 @@ async def main() -> None:
         # 2) Multi-turn: follow-up uses chat_history + result_history
         first_q = "Show all products with their categories"
         print(f"Q: {first_q}")
-        first = await qw.query(conn.database_id, first_q)
+        first = await client.query(conn.database_id, first_q)
         print(f"  -> {len(first.results)} rows\n")
 
         followup_q = "Of those, which ones have an average review rating above 4?"
@@ -89,13 +89,13 @@ async def main() -> None:
             chat_history=[first_q],
             result_history=[first.ai_response],
         )
-        second = await qw.query(conn.database_id, followup)
+        second = await client.query(conn.database_id, followup)
         print(f"\n  SQL: {second.sql_query}")
         print(f"  Rows ({len(second.results)}):")
         _print_rows(second.results)
         print()
 
-        await qw.delete_database(conn.database_id)
+        await client.delete_database(conn.database_id)
         print(f"Cleaned up: removed schema for {conn.database_id} from FalkorDB")
 
 

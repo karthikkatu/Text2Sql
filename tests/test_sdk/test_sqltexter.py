@@ -1,6 +1,6 @@
-"""SDK integration tests for QueryWeaver.
+"""SDK integration tests for SQLTexter.
 
-Most integration tests create QueryWeaver instances via ``async with`` so
+Most integration tests create SQLTexter instances via ``async with`` so
 the connection pool is closed before the test function returns. This
 prevents stale Redis futures from leaking into subsequent tests and
 surfacing as spurious "Event loop is closed" errors. The ``TestModels``
@@ -10,8 +10,8 @@ class is pure-unit (no FalkorDB/Postgres/LLM) and runs without fixtures.
 import pytest
 
 from api.core.errors import InvalidArgumentError
-from queryweaver import QueryWeaver
-from queryweaver.models import (
+from sqltexter import SQLTexter
+from sqltexter.models import (
     DatabaseConnection,
     QueryMetadata,
     QueryRequest,
@@ -20,21 +20,21 @@ from queryweaver.models import (
 )
 
 
-class TestQueryWeaverInit:
+class TestSQLTexterInit:
     """Construction and lifecycle."""
 
     def test_init_defaults(self, falkordb_url):
-        qw = QueryWeaver(falkordb_url=falkordb_url)
-        assert qw.user_id == "default"
+        client = SQLTexter(falkordb_url=falkordb_url)
+        assert client.user_id == "default"
 
     def test_init_with_custom_user_id(self, falkordb_url):
-        qw = QueryWeaver(falkordb_url=falkordb_url, user_id="custom_user")
-        assert qw.user_id == "custom_user"
+        client = SQLTexter(falkordb_url=falkordb_url, user_id="custom_user")
+        assert client.user_id == "custom_user"
 
     @pytest.mark.asyncio
     async def test_context_manager(self, falkordb_url):
-        async with QueryWeaver(falkordb_url=falkordb_url) as qw:
-            assert qw.user_id == "default"
+        async with SQLTexter(falkordb_url=falkordb_url) as client:
+            assert client.user_id == "default"
 
     @pytest.mark.asyncio
     async def test_two_instances_isolated(self, falkordb_url):
@@ -43,8 +43,8 @@ class TestQueryWeaverInit:
         This is the regression test for the ``api.extensions.db`` global
         that older SDK versions mutated on every __init__.
         """
-        async with QueryWeaver(falkordb_url=falkordb_url, user_id="a") as qw1:
-            async with QueryWeaver(falkordb_url=falkordb_url, user_id="b") as qw2:
+        async with SQLTexter(falkordb_url=falkordb_url, user_id="a") as qw1:
+            async with SQLTexter(falkordb_url=falkordb_url, user_id="b") as qw2:
                 assert qw1._db is not qw2._db  # pylint: disable=protected-access
                 assert qw1.user_id == "a"
                 assert qw2.user_id == "b"
@@ -54,8 +54,8 @@ class TestListDatabases:
     """Database listing."""
 
     @pytest.mark.asyncio
-    async def test_list_databases_returns_list(self, queryweaver):
-        databases = await queryweaver.list_databases()
+    async def test_list_databases_returns_list(self, sqltexter):
+        databases = await sqltexter.list_databases()
         assert isinstance(databases, list)
 
 
@@ -67,8 +67,8 @@ class TestConnectDatabase:
     async def test_connect_postgres(self, falkordb_url, postgres_url, has_llm_key):
         # connect_database loads embeddings via the LLM, so it actually requires
         # an LLM key — without one the load fails before the schema is persisted.
-        async with QueryWeaver(falkordb_url=falkordb_url, user_id="test_connect_pg") as qw:
-            result = await qw.connect_database(postgres_url)
+        async with SQLTexter(falkordb_url=falkordb_url, user_id="test_connect_pg") as client:
+            result = await client.connect_database(postgres_url)
             try:
                 assert result.success is True
                 assert result.database_id == "testdb"
@@ -77,25 +77,25 @@ class TestConnectDatabase:
                 # Only clean up if the connect actually persisted a graph;
                 # otherwise database_id is empty and delete_database rejects it.
                 if result.success and result.database_id:
-                    await qw.delete_database(result.database_id)
+                    await client.delete_database(result.database_id)
 
     @pytest.mark.asyncio
     @pytest.mark.requires_mysql
     async def test_connect_mysql(self, falkordb_url, mysql_url, has_llm_key):
-        async with QueryWeaver(falkordb_url=falkordb_url, user_id="test_connect_mysql") as qw:
-            result = await qw.connect_database(mysql_url)
+        async with SQLTexter(falkordb_url=falkordb_url, user_id="test_connect_mysql") as client:
+            result = await client.connect_database(mysql_url)
             try:
                 assert result.success is True
                 assert result.database_id == "testdb"
                 assert "successfully" in result.message.lower()
             finally:
                 if result.success and result.database_id:
-                    await qw.delete_database(result.database_id)
+                    await client.delete_database(result.database_id)
 
     @pytest.mark.asyncio
-    async def test_connect_invalid_url(self, queryweaver):
+    async def test_connect_invalid_url(self, sqltexter):
         with pytest.raises(InvalidArgumentError):
-            await queryweaver.connect_database("invalid://url")
+            await sqltexter.connect_database("invalid://url")
 
 
 class TestGetSchema:
@@ -104,12 +104,12 @@ class TestGetSchema:
     @pytest.mark.asyncio
     @pytest.mark.requires_postgres
     async def test_get_schema(self, falkordb_url, postgres_url, has_llm_key):
-        async with QueryWeaver(falkordb_url=falkordb_url, user_id="test_schema_user") as qw:
-            conn_result = await qw.connect_database(postgres_url)
+        async with SQLTexter(falkordb_url=falkordb_url, user_id="test_schema_user") as client:
+            conn_result = await client.connect_database(postgres_url)
             try:
                 assert conn_result.success
 
-                schema = await qw.get_schema(conn_result.database_id)
+                schema = await client.get_schema(conn_result.database_id)
 
                 assert isinstance(schema.nodes, list)
                 assert len(schema.nodes) >= 2
@@ -119,31 +119,31 @@ class TestGetSchema:
                 assert "orders" in table_names
                 assert isinstance(schema.links, list)
             finally:
-                await qw.delete_database(conn_result.database_id)
+                await client.delete_database(conn_result.database_id)
 
 
 class TestQuery:
     """End-to-end query paths."""
 
     @pytest.mark.asyncio
-    async def test_query_empty_question_raises(self, queryweaver):
+    async def test_query_empty_question_raises(self, sqltexter):
         with pytest.raises(ValueError, match="cannot be empty"):
-            await queryweaver.query("testdb", "")
+            await sqltexter.query("testdb", "")
 
     @pytest.mark.asyncio
-    async def test_query_whitespace_question_raises(self, queryweaver):
+    async def test_query_whitespace_question_raises(self, sqltexter):
         with pytest.raises(ValueError, match="cannot be empty"):
-            await queryweaver.query("testdb", "   ")
+            await sqltexter.query("testdb", "   ")
 
     @pytest.mark.asyncio
     @pytest.mark.requires_postgres
     async def test_query_select_all_customers(self, falkordb_url, postgres_url, has_llm_key):
-        async with QueryWeaver(falkordb_url=falkordb_url, user_id="test_query_all") as qw:
-            conn_result = await qw.connect_database(postgres_url)
+        async with SQLTexter(falkordb_url=falkordb_url, user_id="test_query_all") as client:
+            conn_result = await client.connect_database(postgres_url)
             try:
                 assert conn_result.success
 
-                result = await qw.query(conn_result.database_id, "Show me all customers")
+                result = await client.query(conn_result.database_id, "Show me all customers")
 
                 sql_lower = (result.sql_query or "").lower()
                 assert "select" in sql_lower
@@ -154,17 +154,17 @@ class TestQuery:
                 assert {"Alice Smith", "Bob Jones", "Carol White"} <= names
                 assert result.ai_response
             finally:
-                await qw.delete_database(conn_result.database_id)
+                await client.delete_database(conn_result.database_id)
 
     @pytest.mark.asyncio
     @pytest.mark.requires_postgres
     async def test_query_filter_by_city(self, falkordb_url, postgres_url, has_llm_key):
-        async with QueryWeaver(falkordb_url=falkordb_url, user_id="test_query_filter") as qw:
-            conn_result = await qw.connect_database(postgres_url)
+        async with SQLTexter(falkordb_url=falkordb_url, user_id="test_query_filter") as client:
+            conn_result = await client.connect_database(postgres_url)
             try:
                 assert conn_result.success
 
-                result = await qw.query(
+                result = await client.query(
                     conn_result.database_id, "Show me customers from New York",
                 )
 
@@ -178,17 +178,17 @@ class TestQuery:
                 assert {"Alice Smith", "Carol White"} == names
                 assert "Bob Jones" not in names
             finally:
-                await qw.delete_database(conn_result.database_id)
+                await client.delete_database(conn_result.database_id)
 
     @pytest.mark.asyncio
     @pytest.mark.requires_postgres
     async def test_query_count_aggregation(self, falkordb_url, postgres_url, has_llm_key):
-        async with QueryWeaver(falkordb_url=falkordb_url, user_id="test_query_count") as qw:
-            conn_result = await qw.connect_database(postgres_url)
+        async with SQLTexter(falkordb_url=falkordb_url, user_id="test_query_count") as client:
+            conn_result = await client.connect_database(postgres_url)
             try:
                 assert conn_result.success
 
-                result = await qw.query(
+                result = await client.query(
                     conn_result.database_id, "How many customers are there?",
                 )
 
@@ -205,17 +205,17 @@ class TestQuery:
                 else:
                     assert len(result.results) == 3
             finally:
-                await qw.delete_database(conn_result.database_id)
+                await client.delete_database(conn_result.database_id)
 
     @pytest.mark.asyncio
     @pytest.mark.requires_postgres
     async def test_query_join_orders(self, falkordb_url, postgres_url, has_llm_key):
-        async with QueryWeaver(falkordb_url=falkordb_url, user_id="test_query_join") as qw:
-            conn_result = await qw.connect_database(postgres_url)
+        async with SQLTexter(falkordb_url=falkordb_url, user_id="test_query_join") as client:
+            conn_result = await client.connect_database(postgres_url)
             try:
                 assert conn_result.success
 
-                result = await qw.query(
+                result = await client.query(
                     conn_result.database_id, "Show me all orders with customer names",
                 )
 
@@ -230,18 +230,18 @@ class TestQuery:
                     for k in first.keys()
                 )
             finally:
-                await qw.delete_database(conn_result.database_id)
+                await client.delete_database(conn_result.database_id)
 
     @pytest.mark.asyncio
     @pytest.mark.requires_postgres
     async def test_query_with_history(self, falkordb_url, postgres_url, has_llm_key):
         """Chat history threads through via QueryRequest."""
-        async with QueryWeaver(falkordb_url=falkordb_url, user_id="test_query_history") as qw:
-            conn_result = await qw.connect_database(postgres_url)
+        async with SQLTexter(falkordb_url=falkordb_url, user_id="test_query_history") as client:
+            conn_result = await client.connect_database(postgres_url)
             try:
                 assert conn_result.success
 
-                first = await qw.query(conn_result.database_id, "Show me all customers")
+                first = await client.query(conn_result.database_id, "Show me all customers")
                 assert first.sql_query
 
                 follow_up = QueryRequest(
@@ -249,11 +249,11 @@ class TestQuery:
                     chat_history=["Show me all customers"],
                     result_history=[first.ai_response or ""],
                 )
-                second = await qw.query(conn_result.database_id, follow_up)
+                second = await client.query(conn_result.database_id, follow_up)
                 assert second is not None
                 assert isinstance(second.results, list)
             finally:
-                await qw.delete_database(conn_result.database_id)
+                await client.delete_database(conn_result.database_id)
 
 
 class TestDeleteDatabase:
@@ -262,15 +262,15 @@ class TestDeleteDatabase:
     @pytest.mark.asyncio
     @pytest.mark.requires_postgres
     async def test_delete_database(self, falkordb_url, postgres_url, has_llm_key):
-        async with QueryWeaver(falkordb_url=falkordb_url, user_id="test_delete_user") as qw:
-            conn_result = await qw.connect_database(postgres_url)
+        async with SQLTexter(falkordb_url=falkordb_url, user_id="test_delete_user") as client:
+            conn_result = await client.connect_database(postgres_url)
             assert conn_result.success
             assert conn_result.database_id == "testdb"
 
-            deleted = await qw.delete_database(conn_result.database_id)
+            deleted = await client.delete_database(conn_result.database_id)
             assert deleted is True
 
-            databases = await qw.list_databases()
+            databases = await client.list_databases()
             assert conn_result.database_id not in databases
 
 

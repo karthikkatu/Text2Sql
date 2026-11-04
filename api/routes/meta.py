@@ -1,4 +1,4 @@
-"""Metadata routes (``/version``, ``/auth-status``) for the QueryWeaver API.
+"""Metadata routes (``/version``, ``/auth-status``) for the SQLTexter API.
 
 Their tag is not mapped to any MCP type, so FastMCP's default EXCLUDE route
 map keeps them out of the MCP tool surface.
@@ -15,22 +15,22 @@ meta_router = APIRouter(tags=["Meta"])
 
 
 def app_version() -> str:
-    """Return the running QueryWeaver version.
+    """Return the running SQLTexter version.
 
     Prefers installed distribution metadata; falls back to the package's
     ``__version__`` when running from a source checkout without dist metadata.
     """
     try:
-        return version("queryweaver")
+        return version("sqltexter")
     except PackageNotFoundError:
-        from queryweaver import __version__  # pylint: disable=import-outside-toplevel
+        from sqltexter import __version__  # pylint: disable=import-outside-toplevel
         return __version__
 
 
 @meta_router.get("/version")
 async def get_version() -> dict[str, str]:
     """Public endpoint returning the application name and version."""
-    return {"name": "queryweaver", "version": app_version()}
+    return {"name": "sqltexter", "version": app_version()}
 
 
 @meta_router.get("/auth-status")

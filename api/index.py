@@ -1,8 +1,8 @@
 """Main entry point for the text2sql API.
 
 Module-level imports of ``dotenv`` / ``api.app_factory`` are guarded so that
-``pip install queryweaver`` (no ``[server]`` extra) can still resolve the
-``queryweaver`` console script and surface a friendly install message.
+``pip install sqltexter`` (no ``[server]`` extra) can still resolve the
+``sqltexter`` console script and surface a friendly install message.
 ``app`` is exposed only when the server extras are present so uvicorn's
 ``api.index:app`` reference keeps working.
 """
@@ -26,16 +26,16 @@ except ImportError as _exc:
 
 
 def main() -> None:
-    """Console-script entrypoint (``queryweaver`` after ``pip install``).
+    """Console-script entrypoint (``sqltexter`` after ``pip install``).
 
     Requires the ``[server]`` extra (FastAPI + uvicorn). Plain
-    ``pip install queryweaver`` installs the SDK only; the server is
-    available via ``pip install queryweaver[server]``.
+    ``pip install sqltexter`` installs the SDK only; the server is
+    available via ``pip install sqltexter[server]``.
     """
     if not _SERVER_AVAILABLE:
         raise SystemExit(
-            "queryweaver server requires the [server] extra. "
-            "Install with: pip install queryweaver[server]\n"
+            "sqltexter server requires the [server] extra. "
+            "Install with: pip install sqltexter[server]\n"
             f"(missing: {_SERVER_IMPORT_ERROR})"
         )
 

@@ -156,7 +156,7 @@ const TokensModal: React.FC<TokensModalProps> = ({ open, onOpenChange }) => {
           <DialogHeader>
             <DialogTitle className="text-foreground">API Tokens</DialogTitle>
             <DialogDescription className="text-muted-foreground">
-              API tokens allow you to authenticate with the QueryWeaver API without using OAuth.
+              API tokens allow you to authenticate with the SQLTexter API without using OAuth.
               Keep your tokens secure and don't share them publicly.
             </DialogDescription>
           </DialogHeader>

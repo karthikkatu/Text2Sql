@@ -83,7 +83,7 @@ class TestLocalUser:
         response = client.get("/version")
 
         assert response.status_code == 200
-        assert response.json()["name"] == "queryweaver"
+        assert response.json()["name"] == "sqltexter"
         assert response.json()["version"]
 
     def test_auth_status_reports_the_local_user_signed_in(self, client):

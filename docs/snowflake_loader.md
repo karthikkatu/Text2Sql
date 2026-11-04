@@ -1,10 +1,10 @@
 # Snowflake Loader
 
-This document describes the Snowflake loader implementation in QueryWeaver.
+This document describes the Snowflake loader implementation in SQLTexter.
 
 ## Overview
 
-The Snowflake loader enables QueryWeaver to connect to Snowflake databases, extract schema information (tables, columns, foreign keys, relationships), and load it into a graph structure for Text2SQL queries.
+The Snowflake loader enables SQLTexter to connect to Snowflake databases, extract schema information (tables, columns, foreign keys, relationships), and load it into a graph structure for Text2SQL queries.
 
 ## Connection URL Format
 
@@ -71,7 +71,7 @@ The Snowflake loader provides the following features:
 
 ### Via Web Interface
 
-1. Navigate to the QueryWeaver web interface
+1. Navigate to the SQLTexter web interface
 2. Click on "Connect Database"
 3. Enter your Snowflake connection URL
 4. The schema will be automatically extracted and loaded

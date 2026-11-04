@@ -58,7 +58,7 @@ CREATE (u)-[:PERFORMED]->(e:UsageEvent {
 })
 FOREACH (_ IN CASE WHEN $error = '' THEN [] ELSE [1] END |
     CREATE (error:Error {
-        source: 'queryweaver',
+        source: 'sqltexter',
         type: 'QueryError',
         message: $error,
         endpoint: $endpoint,

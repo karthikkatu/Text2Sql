@@ -399,7 +399,7 @@ const DatabaseModal = ({ open, onOpenChange }: DatabaseModalProps) => {
                     : selectedDatabase === 'mysql'
                     ? 'mysql://username:password@host:3306/database'
                     : selectedDatabase === 'sqlite'
-                    ? 'sqlite:///spider/database/concert_singer/concert_singer.sqlite'
+                    ? 'sqlite:///spider_data/database/concert_singer/concert_singer.sqlite'
                     : 'snowflake://username:password@account/database/schema?warehouse=warehouse_name'
                 }
                 value={connectionUrl}

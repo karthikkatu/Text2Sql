@@ -202,7 +202,7 @@ def create_app():  # pylint: disable=too-many-statements
     # Create the FastAPI app instance with original routes
     # Will be merged with MCP app later if MCP is enabled
     app = FastAPI(
-        title="QueryWeaver"
+        title="SQLTexter"
     )
 
     # Include routers
@@ -227,7 +227,7 @@ def create_app():  # pylint: disable=too-many-statements
     else:
         mcp = FastMCP.from_fastapi(
             app=app,
-            name="queryweaver",
+            name="sqltexter",
             route_maps=[
                 RouteMap(tags={"mcp_resource"}, mcp_type=MCPType.RESOURCE),
                 RouteMap(
@@ -248,7 +248,7 @@ def create_app():  # pylint: disable=too-many-statements
 
     # Combine the MCP app and original app
     app = FastAPI(
-        title="QueryWeaver",
+        title="SQLTexter",
         version=app_version(),
         description="Text2SQL with Graph-Powered Schema Understanding",
         openapi_tags=[

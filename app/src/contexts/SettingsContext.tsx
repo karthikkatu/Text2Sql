@@ -3,7 +3,7 @@ import { DEFAULT_MODEL } from '@/utils/vendorConfig';
 
 export type AIVendor = 'openai' | 'google' | 'anthropic';
 
-const STORAGE_KEY = 'queryweaver_ai_settings';
+const STORAGE_KEY = 'sqltexter_ai_settings';
 
 interface StoredSettings {
   vendor: AIVendor;

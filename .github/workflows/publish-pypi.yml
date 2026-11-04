@@ -1,10 +1,10 @@
 name: Publish to PyPI
 
-# Builds the queryweaver wheel/sdist ONCE, then publishes that exact artifact
+# Builds the sqltexter wheel/sdist ONCE, then publishes that exact artifact
 # to PyPI via Trusted Publishing (OIDC) — no API tokens are stored.
 #
 # One-time setup: configure a Trusted Publisher on PyPI for repo
-# FalkorDB/QueryWeaver, workflow publish-pypi.yml, GitHub environment `pypi`.
+# karthikkatu/Text2Sql, workflow publish-pypi.yml, GitHub environment `pypi`.
 
 permissions:
   contents: read

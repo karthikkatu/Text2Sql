@@ -1,6 +1,6 @@
 """The single, implicit user every request runs as.
 
-QueryWeaver has no login: anyone who can reach the server is the same user. The
+SQLTexter has no login: anyone who can reach the server is the same user. The
 rest of the code still namespaces graphs and usage by a ``user_id`` (the base64
 of an email), so this supplies one constant identity rather than changing every
 caller.
@@ -14,7 +14,7 @@ import base64
 
 from fastapi import Request
 
-LOCAL_USER_EMAIL = "local@queryweaver.local"
+LOCAL_USER_EMAIL = "local@sqltexter.local"
 LOCAL_USER_NAME = "Local User"
 LOCAL_USER_ID = base64.b64encode(LOCAL_USER_EMAIL.encode()).decode()
 

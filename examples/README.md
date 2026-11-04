@@ -1,13 +1,13 @@
-# QueryWeaver SDK — E-commerce Demo
+# SQLTexter SDK — E-commerce Demo
 
-End-to-end walkthrough of using the `queryweaver` Python package against
+End-to-end walkthrough of using the `sqltexter` Python package against
 a realistic 12-table PostgreSQL schema.
 
 ## What's in here
 
 | File | Purpose |
 |---|---|
-| `ecommerce_example.sql` | Creates a `queryweaver_demo` database with 12 tables and ~120 rows of seed data |
+| `ecommerce_example.sql` | Creates a `sqltexter_demo` database with 12 tables and ~120 rows of seed data |
 | `ecommerce_example.py` | SDK script: connect → introspect schema → run a one-shot query → run a follow-up with chat history → tear down |
 
 The schema models a small e-commerce business:
@@ -34,7 +34,7 @@ users ───┬── addresses
 ## 1. Start PostgreSQL
 
 ```bash
-docker run -d --name queryweaver-pg \
+docker run -d --name sqltexter-pg \
   -e POSTGRES_USER=root \
   -e POSTGRES_PASSWORD=123123 \
   -p 5432:5432 \
@@ -44,7 +44,7 @@ docker run -d --name queryweaver-pg \
 ## 2. Start FalkorDB
 
 ```bash
-docker run -d --name queryweaver-falkor \
+docker run -d --name sqltexter-falkor \
   -p 6379:6379 \
   falkordb/falkordb:latest
 ```
@@ -55,8 +55,8 @@ in step 5.)
 ## 3. Load the demo schema and seed data
 
 ```bash
-docker cp examples/ecommerce_example.sql queryweaver-pg:/tmp/demo.sql
-docker exec queryweaver-pg psql -U root -d postgres -f /tmp/demo.sql
+docker cp examples/ecommerce_example.sql sqltexter-pg:/tmp/demo.sql
+docker exec sqltexter-pg psql -U root -d postgres -f /tmp/demo.sql
 ```
 
 The script ends with a row-count summary — you should see all 12 tables
@@ -64,11 +64,7 @@ populated.
 
 ## 4. Install the SDK
 
-```bash
-pip install queryweaver
-```
-
-Or from a local checkout of this repo:
+From a local checkout of this repo:
 
 ```bash
 pip install -e .
@@ -110,7 +106,7 @@ You will see:
 ## Cleanup
 
 ```bash
-docker rm -f queryweaver-pg queryweaver-falkor
+docker rm -f sqltexter-pg sqltexter-falkor
 ```
 
 ## Sample questions to try

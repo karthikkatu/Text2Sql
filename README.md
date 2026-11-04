@@ -1,21 +1,162 @@
 <div align="center">  
-  <h1>QueryWeaver (Text2SQL)</h1>
+  <h1>SQLTexter (Text2SQL)</h1>
 
 **REST API · MCP · Graph-powered** 
 
-QueryWeaver is an **open-source Text2SQL** tool that converts plain-English questions into SQL using **graph-powered schema understanding**. It helps you ask databases natural-language questions and returns SQL and results.
+SQLTexter is an **open-source Text2SQL** tool that converts plain-English questions into SQL using **graph-powered schema understanding**. It helps you ask databases natural-language questions and returns SQL and results.
 
 Connect and ask questions: [![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?&logo=discord&logoColor=white)](https://discord.gg/b32KEzMzce)
 
 [![Try Free](https://img.shields.io/badge/Try%20Free-FalkorDB%20Cloud-FF8101?labelColor=FDE900&link=https://app.falkordb.cloud)](https://app.falkordb.cloud)
-[![PyPI](https://img.shields.io/pypi/v/queryweaver?label=PyPI&logo=pypi&logoColor=white)](https://pypi.org/project/queryweaver/)
-[![Dockerhub](https://img.shields.io/docker/pulls/falkordb/queryweaver?label=Docker)](https://hub.docker.com/r/falkordb/queryweaver/)
-[![Tests](https://github.com/FalkorDB/QueryWeaver/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/FalkorDB/QueryWeaver/actions/workflows/tests.yml)
-[![Swagger UI](https://img.shields.io/badge/API-Swagger-11B48A?logo=swagger&logoColor=white)](https://app.queryweaver.ai/docs)
+[![Tests](https://github.com/karthikkatu/Text2Sql/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/karthikkatu/Text2Sql/actions/workflows/tests.yml)
 </div>
 
-![new-qw-ui-gif](https://github.com/user-attachments/assets/34663279-0273-4c21-88a8-d20700020a07)
 
+
+## Run the UI with the Spider dataset
+
+Follow these steps to go from a copy of this repository to asking questions about a [Spider](https://yale-lily.github.io/spider) database in your browser. The dataset isn't included in the repository, so you download it first.
+
+The commands are for macOS or Linux. Run them from the repository root.
+
+### Prerequisites
+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/), which also installs Python 3.12+ if you don't have it
+- Node.js 20.19+ or 22.12+, with npm
+- Docker, installed and running
+- `make` and `unzip`
+- An API key for one LLM provider, or a local Ollama model (see [step 4](#4-configure-your-llm-provider))
+- About 2 GB of free disk space
+
+### 1. Download the Spider dataset
+
+1. Open the Spider page: https://yale-lily.github.io/spider
+2. Click the **Spider Dataset** link, which opens the file on Google Drive, and download it.
+3. Move the downloaded `spider_data.zip` (about 200 MB) to the repository root.
+
+> Spider is distributed under the [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/legalcode) license.
+
+### 2. Extract it into `data/`
+
+```bash
+mkdir -p data
+unzip spider_data.zip -d data
+rm -rf data/__MACOSX spider_data.zip
+```
+
+SQLTexter only opens SQLite files inside `data/`, and always read-only. Check that the files are in the right place:
+
+```bash
+ls data/spider_data/database/concert_singer
+# concert_singer.sqlite  schema.sql
+```
+
+### 3. Install dependencies
+
+```bash
+make install
+```
+
+### 4. Configure your LLM provider
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and add a key for one provider. For example, for OpenAI:
+
+```bash
+OPENAI_API_KEY=your_openai_api_key
+```
+
+For other providers, see [AI/LLM configuration](#aillm-configuration). For an OpenAI-compatible gateway, set these four values instead:
+
+```bash
+OPENAI_API_KEY=your_gateway_key
+OPENAI_API_BASE=https://your-gateway.example.com/v1
+COMPLETION_MODEL=openai/<completion-model>
+EMBEDDING_MODEL=openai/<embedding-model>
+```
+
+> If your embedding model doesn't produce 1536-dimension vectors, the server log shows `Vector dimension mismatch` errors for each question. Answers in the UI still work, but SQLTexter can't look up similar past questions.
+
+Leave `FALKORDB_URL` as it is. The default matches the container you start in the next step.
+
+### 5. Start FalkorDB
+
+```bash
+make docker-falkordb
+```
+
+### 6. Start the app
+
+```bash
+make run-dev
+```
+
+This builds the frontend and starts the server. When the log shows `Application startup complete`, leave the terminal running and open http://127.0.0.1:5000 in your browser. There's no login.
+
+> On macOS, use `127.0.0.1` rather than `localhost`. AirPlay Receiver also listens on port 5000, so `localhost:5000` can return a `403` error from AirPlay instead of loading the app.
+
+### 7. Connect a Spider database
+
+1. Click **Connect to Database**.
+2. Under **Database Type**, choose **SQLite**.
+3. Under **Connection URL**, enter:
+
+   ```text
+   sqlite:///spider_data/database/concert_singer/concert_singer.sqlite
+   ```
+4. Click **Connect**.
+
+When it finishes, the header shows **Connected: concert_singer**. This took about 15 seconds in testing, and uses your LLM provider.
+
+To use another database, replace both instances of `concert_singer` with a folder name from `data/spider_data/database/`.
+
+> Connect each database only once, and don't use the refresh button next to the database selector. Either one currently duplicates the schema graph, which can lower SQL quality.
+
+### 8. Ask a question
+
+Type a question in the box at the bottom of the page and press the send button. For example:
+
+```text
+How many singers do we have?
+```
+
+You should see the generated SQL, a results table with the value `6`, and an answer in plain English. The SQL can vary between runs and LLM models, for example:
+
+```sql
+SELECT COUNT(Singer_ID) FROM singer;
+```
+
+To try more questions and compare your results with the expected SQL, see `dev.json` and `dev_gold.sql` in `data/spider_data/`.
+
+### Stop and restart
+
+Press `Ctrl+C` in the server terminal, then stop FalkorDB:
+
+```bash
+docker stop falkordb-test
+```
+
+To start again, your connected databases are still there:
+
+```bash
+docker start falkordb-test
+make run-dev
+```
+
+`make docker-stop` also stops FalkorDB, but it removes the container, so you'd need to run step 5 and connect your databases again.
+
+### Common problems
+
+| Problem | Fix |
+|---------|-----|
+| `403` error at `localhost:5000` on macOS | Open http://127.0.0.1:5000 instead. |
+| Port 5000 is already in use | Run `PORT=5001 make run-dev` and open http://127.0.0.1:5001. |
+| `Failed to load database schema` when connecting | If the server log shows `Invalid SQLite database path`, check that the URL starts with `sqlite:///spider_data/` and that the file from step 2 exists. |
+| `make docker-falkordb` says the container name is already in use | The container already exists. Run `docker start falkordb-test`. |
+| Connecting or asking a question fails with an LLM error | Check the key and model names in `.env`, then restart the server. |
 
 ## Get Started
 
@@ -23,7 +164,8 @@ Connect and ask questions: [![Discord](https://img.shields.io/badge/Discord-%235
 
 > 💡 Recommended for evaluation purposes (Local Python or Node are not required)
 ```bash
-docker run -p 5000:5000 -it falkordb/queryweaver
+docker build -t sqltexter .
+docker run -p 5000:5000 -it sqltexter
 ```
 
 
@@ -38,7 +180,7 @@ Create a local `.env` by copying `.env.example` and passing it to Docker. This i
 ```bash
 cp .env.example .env
 # edit .env to set your values, then:
-docker run -p 5000:5000 --env-file .env falkordb/queryweaver
+docker run -p 5000:5000 --env-file .env sqltexter
 ```
 
 ### Alternative: Pass individual environment variables
@@ -49,19 +191,19 @@ If you prefer to pass variables on the command line, use `-e` flags (less conven
 docker run -p 5000:5000 -it \
   -e FALKORDB_URL=redis://host.docker.internal:6379/0 \
   -e AZURE_API_KEY=your_azure_api_key \
-  falkordb/queryweaver
+  sqltexter
 ```
 
-> QueryWeaver has no login: anyone who can reach the server is the same user.
+> SQLTexter has no login: anyone who can reach the server is the same user.
 > Keep it on localhost or a network you trust.
 
-> Note: QueryWeaver supports multiple AI providers. You can use `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `AZURE_API_KEY`. See the [AI/LLM configuration](#aillm-configuration) section for details.
+> Note: SQLTexter supports multiple AI providers. You can use `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `AZURE_API_KEY`. See the [AI/LLM configuration](#aillm-configuration) section for details.
 
 > For a full list of configuration options, consult `.env.example`.
 
 ## Memory TTL (optional)
 
-QueryWeaver stores per-user conversation memory in FalkorDB. By default these graphs persist indefinitely. Set `MEMORY_TTL_SECONDS` to apply a Redis TTL (in seconds) so idle memory graphs are automatically cleaned up.
+SQLTexter stores per-user conversation memory in FalkorDB. By default these graphs persist indefinitely. Set `MEMORY_TTL_SECONDS` to apply a Redis TTL (in seconds) so idle memory graphs are automatically cleaned up.
 
 ```bash
 # Expire memory graphs after 1 week of inactivity
@@ -72,9 +214,9 @@ The TTL is refreshed on every user interaction, so active users keep their memor
 
 ## MCP server: host or connect (optional)
 
-QueryWeaver includes optional support for the Model Context Protocol (MCP). You can either have QueryWeaver expose an MCP-compatible HTTP surface (so other services can call QueryWeaver as an MCP server), or configure QueryWeaver to call an external MCP server for model/context services.
+SQLTexter includes optional support for the Model Context Protocol (MCP). You can either have SQLTexter expose an MCP-compatible HTTP surface (so other services can call SQLTexter as an MCP server), or configure SQLTexter to call an external MCP server for model/context services.
 
-What QueryWeaver provides
+What SQLTexter provides
 - The app registers MCP operations focused on Text2SQL flows:
    - `list_databases`
    - `connect_database`
@@ -84,14 +226,14 @@ What QueryWeaver provides
 - To disable the built-in MCP endpoints set `DISABLE_MCP=true` in your `.env` or environment (default: MCP enabled).
 - Configuration
 
-- `DISABLE_MCP` — disable QueryWeaver's built-in MCP HTTP surface. Set to `true` to disable. Default: `false` (MCP enabled).
+- `DISABLE_MCP` — disable SQLTexter's built-in MCP HTTP surface. Set to `true` to disable. Default: `false` (MCP enabled).
 
 Examples
 
 Disable the built-in MCP when running with Docker:
 
 ```bash
-docker run -p 5000:5000 -it --env DISABLE_MCP=true falkordb/queryweaver
+docker run -p 5000:5000 -it --env DISABLE_MCP=true sqltexter
 ```
 
 Calling the built-in MCP endpoints (example)
@@ -100,12 +242,12 @@ Calling the built-in MCP endpoints (example)
 
 ### Server Configuration
 
-Below is a minimal example `mcp.json` client configuration that targets a local QueryWeaver instance exposing the MCP HTTP surface at `/mcp`.
+Below is a minimal example `mcp.json` client configuration that targets a local SQLTexter instance exposing the MCP HTTP surface at `/mcp`.
 
 ```json
 {
    "servers": {
-      "queryweaver": {
+      "sqltexter": {
          "type": "http",
          "url": "http://127.0.0.1:5000/mcp"
       }
@@ -118,13 +260,13 @@ Below is a minimal example `mcp.json` client configuration that targets a local 
 
 ### API Documentation
 
-Swagger UI: https://app.queryweaver.ai/docs
+Swagger UI: http://localhost:5000/docs
 
-OpenAPI JSON: https://app.queryweaver.ai/openapi.json
+OpenAPI JSON: http://localhost:5000/openapi.json
 
 ### Overview
 
-QueryWeaver exposes a small REST API for managing graphs (database schemas) and running Text2SQL queries. There is no authentication: every request runs as one implicit local user, so graphs are namespaced to that user.
+SQLTexter exposes a small REST API for managing graphs (database schemas) and running Text2SQL queries. There is no authentication: every request runs as one implicit local user, so graphs are namespaced to that user.
 
 Core endpoints
 - GET /graphs — list available graphs
@@ -249,43 +391,44 @@ Notes & tips
 
 ## Python SDK
 
-The QueryWeaver Python SDK allows you to use Text2SQL functionality directly in your Python applications **without running a web server**.
+The SQLTexter Python SDK allows you to use Text2SQL functionality directly in your Python applications **without running a web server**.
 
 ### Installation
 
 ```bash
+# From a checkout of this repo.
 # SDK only (minimal dependencies)
-pip install queryweaver
+pip install .
 
 # With server dependencies (FastAPI, etc.)
-pip install queryweaver[server]
+pip install ".[server]"
 
 # Development (includes testing tools)
-pip install queryweaver[dev]
+pip install ".[dev]"
 ```
 
 ### Quick Start
 
 ```python
 import asyncio
-from queryweaver import QueryWeaver
+from sqltexter import SQLTexter
 
 async def main():
     # Initialize with FalkorDB connection
-    qw = QueryWeaver(falkordb_url="redis://localhost:6379")
+    client = SQLTexter(falkordb_url="redis://localhost:6379")
 
     # Connect a PostgreSQL or MySQL database
-    conn = await qw.connect_database("postgresql://user:pass@host:5432/mydb")
+    conn = await client.connect_database("postgresql://user:pass@host:5432/mydb")
     print(f"Connected: {conn.database_id}")  # "mydb"
 
     # Convert natural language to SQL and execute — pass the database_id
     # returned by connect_database (un-prefixed; namespacing is internal).
-    result = await qw.query(conn.database_id, "Show me all customers from NYC")
+    result = await client.query(conn.database_id, "Show me all customers from NYC")
     print(result.sql_query)    # SELECT * FROM customers WHERE city = 'NYC'
     print(result.results)       # [{"id": 1, "name": "Alice", "city": "NYC"}, ...]
     print(result.ai_response)   # "Found 42 customers from NYC..."
 
-    await qw.close()
+    await client.close()
 
 asyncio.run(main())
 ```
@@ -293,21 +436,21 @@ asyncio.run(main())
 ### Context Manager
 
 ```python
-async with QueryWeaver(falkordb_url="redis://localhost:6379") as qw:
-    conn = await qw.connect_database("postgresql://user:pass@host/mydb")
-    result = await qw.query(conn.database_id, "Count orders by status")
+async with SQLTexter(falkordb_url="redis://localhost:6379") as client:
+    conn = await client.connect_database("postgresql://user:pass@host/mydb")
+    result = await client.query(conn.database_id, "Count orders by status")
 # close() runs automatically, awaiting any in-flight background memory writes.
 ```
 
 ### Multiple Instances
 
-Multiple `QueryWeaver` instances can run side-by-side in the same process.
+Multiple `SQLTexter` instances can run side-by-side in the same process.
 Each holds its own FalkorDB connection and passes it explicitly through
 every call, so there is no shared global state to collide over.
 
 ```python
-async with QueryWeaver(falkordb_url="redis://host-a:6379", user_id="tenant_a") as a, \
-           QueryWeaver(falkordb_url="redis://host-b:6379", user_id="tenant_b") as b:
+async with SQLTexter(falkordb_url="redis://host-a:6379", user_id="tenant_a") as a, \
+           SQLTexter(falkordb_url="redis://host-b:6379", user_id="tenant_b") as b:
     sales = await a.connect_database("postgresql://user:pass@host-a/sales")
     ops = await b.connect_database("postgresql://user:pass@host-b/ops")
     await a.query(sales.database_id, "Show top customers")
@@ -331,7 +474,7 @@ async with QueryWeaver(falkordb_url="redis://host-a:6379", user_id="tenant_a") a
 For multi-turn conversations, custom instructions, or per-request LLM overrides:
 
 ```python
-from queryweaver import QueryWeaver, QueryRequest
+from sqltexter import SQLTexter, QueryRequest
 
 request = QueryRequest(
     question="Show their recent orders",
@@ -343,7 +486,7 @@ request = QueryRequest(
     custom_model="openai/gpt-4.1",
 )
 
-result = await qw.query("mydb", request)
+result = await client.query("mydb", request)
 ```
 
 ### Handling Destructive Operations
@@ -351,12 +494,12 @@ result = await qw.query("mydb", request)
 INSERT, UPDATE, DELETE operations require confirmation:
 
 ```python
-result = await qw.query("mydb", "Delete inactive users")
+result = await client.query("mydb", "Delete inactive users")
 
 if result.requires_confirmation:
     print(f"Destructive SQL: {result.sql_query}")
     # Execute after user confirms
-    confirmed = await qw.execute_confirmed("mydb", result.sql_query)
+    confirmed = await client.execute_confirmed("mydb", result.sql_query)
 ```
 
 ### Requirements
@@ -368,7 +511,7 @@ if result.requires_confirmation:
 
 ## Development
 
-Follow these steps to run and develop QueryWeaver from source.
+Follow these steps to run and develop SQLTexter from source.
 
 ### Prerequisites
 
@@ -383,8 +526,8 @@ Quickstart (recommended for development):
 
 ```bash
 # Clone the repo
-git clone https://github.com/FalkorDB/QueryWeaver.git
-cd QueryWeaver
+git clone https://github.com/karthikkatu/Text2Sql.git
+cd Text2Sql
 
 # Install dependencies (backend + frontend) and start the dev server
 make install
@@ -395,7 +538,7 @@ If you prefer to set up manually or need a custom environment, use uv:
 
 ```bash
 # Install Python (backend) and frontend dependencies
-uv sync
+uv sync --all-extras
 
 # Create a local environment file
 cp .env.example .env
@@ -433,7 +576,7 @@ npm run build
 
 ### AI/LLM configuration
 
-QueryWeaver supports multiple AI providers. Set one API key and QueryWeaver auto-detects which provider to use.
+SQLTexter supports multiple AI providers. Set one API key and SQLTexter auto-detects which provider to use.
 
 **Priority order:** Ollama > OpenAI > Gemini > Anthropic > Cohere > Azure (default)
 
@@ -463,21 +606,21 @@ Using OpenAI:
 ```bash
 docker run -p 5000:5000 -it \
   -e OPENAI_API_KEY=your_openai_api_key \
-  falkordb/queryweaver
+  sqltexter
 ```
 
 Using Google Gemini:
 ```bash
 docker run -p 5000:5000 -it \
   -e GEMINI_API_KEY=your_gemini_api_key \
-  falkordb/queryweaver
+  sqltexter
 ```
 
 Using Anthropic:
 ```bash
 docker run -p 5000:5000 -it \
   -e ANTHROPIC_API_KEY=your_anthropic_api_key \
-  falkordb/queryweaver
+  sqltexter
 ```
 
 Using Azure OpenAI:
@@ -486,7 +629,7 @@ docker run -p 5000:5000 -it \
   -e AZURE_API_KEY=your_azure_api_key \
   -e AZURE_API_BASE=https://your-resource.openai.azure.com/ \
   -e AZURE_API_VERSION=2025-03-01-preview \
-  falkordb/queryweaver
+  sqltexter
 ```
 
 ## Testing
@@ -495,7 +638,7 @@ docker run -p 5000:5000 -it \
 
 ### Prerequisites
 
-- Install dev dependencies: `uv sync`
+- Install dev dependencies: `uv sync --all-extras`
 - Start FalkorDB (see `make docker-falkordb`)
 - Install Playwright browsers: `uv run playwright install`
 
@@ -551,9 +694,4 @@ GitHub Actions run unit and E2E tests on pushes and pull requests. Failures capt
 - `tests/` – unit and E2E tests
 
 
-## License
-
-Licensed under the GNU Affero General Public License (AGPL). See [LICENSE](LICENSE.txt).
-
-Copyright FalkorDB Ltd. 2025
 

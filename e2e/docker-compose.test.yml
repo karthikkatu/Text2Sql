@@ -2,7 +2,7 @@ services:
   # PostgreSQL test database (for regular tests)
   postgres-test:
     image: postgres:15-alpine
-    container_name: queryweaver-postgres-test
+    container_name: sqltexter-postgres-test
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -20,7 +20,7 @@ services:
   # PostgreSQL test database (for delete tests)
   postgres-test-delete:
     image: postgres:15-alpine
-    container_name: queryweaver-postgres-test-delete
+    container_name: sqltexter-postgres-test-delete
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -38,7 +38,7 @@ services:
   # MySQL test database (for regular tests)
   mysql-test:
     image: mysql:8.0
-    container_name: queryweaver-mysql-test
+    container_name: sqltexter-mysql-test
     environment:
       MYSQL_ROOT_PASSWORD: password
       MYSQL_DATABASE: testdb
@@ -56,7 +56,7 @@ services:
   # MySQL test database (for delete tests)
   mysql-test-delete:
     image: mysql:8.0
-    container_name: queryweaver-mysql-test-delete
+    container_name: sqltexter-mysql-test-delete
     environment:
       MYSQL_ROOT_PASSWORD: password
       MYSQL_DATABASE: testdb_delete

@@ -392,7 +392,7 @@ const LoginModal = ({ open, onOpenChange, canClose = true }: LoginModalProps) =>
       >
         <DialogHeader>
           <DialogTitle className="text-2xl font-semibold text-center text-card-foreground">
-            {awaitingEmail ? "Check your inbox" : "Welcome to QueryWeaver"}
+            {awaitingEmail ? "Check your inbox" : "Welcome to SQLTexter"}
           </DialogTitle>
           <DialogDescription className="text-center text-muted-foreground pt-2">
             {awaitingEmail

@@ -5,7 +5,7 @@ import { getVendorPrefix } from '@/utils/vendorConfig';
 
 /**
  * Chat/Query Service
- * Handles streaming chat queries to the QueryWeaver backend
+ * Handles streaming chat queries to the SQLTexter backend
  */
 
 export class ChatService {

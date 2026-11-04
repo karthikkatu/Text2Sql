@@ -1,22 +1,22 @@
-"""QueryWeaver SDK - Python client for Text2SQL functionality.
+"""SQLTexter SDK - Python client for Text2SQL functionality.
 
-This module provides the main QueryWeaver class for converting natural
+This module provides the main SQLTexter class for converting natural
 language questions to SQL queries without requiring a web server.
 
 Note: This module uses lazy imports (import-outside-toplevel) intentionally.
 The api.* modules do not need to be loaded until an SDK method is called,
-so deferring their import keeps `from queryweaver import QueryWeaver`
+so deferring their import keeps `from sqltexter import SQLTexter`
 cheap and side-effect-free.
 
 Example usage:
     ```python
-    from queryweaver import QueryWeaver
+    from sqltexter import SQLTexter
 
     async def main():
-        qw = QueryWeaver(falkordb_url="redis://localhost:6379")
-        await qw.connect_database("postgresql://user:pass@host/mydb")
+        client = SQLTexter(falkordb_url="redis://localhost:6379")
+        await client.connect_database("postgresql://user:pass@host/mydb")
 
-        result = await qw.query("mydb", "Show me all customers from NYC")
+        result = await client.query("mydb", "Show me all customers from NYC")
         print(result.sql_query)
         print(result.results)
     ```
@@ -28,8 +28,8 @@ import asyncio
 from contextlib import contextmanager
 from typing import Optional, Union
 
-from queryweaver.connection import FalkorDBConnection
-from queryweaver.models import (
+from sqltexter.connection import FalkorDBConnection
+from sqltexter.models import (
     QueryResult,
     SchemaResult,
     DatabaseConnection,
@@ -38,10 +38,10 @@ from queryweaver.models import (
 )
 
 
-class QueryWeaver:
+class SQLTexter:
     """Python SDK for Text2SQL functionality.
 
-    This class provides a programmatic interface to QueryWeaver's text-to-SQL
+    This class provides a programmatic interface to SQLTexter's text-to-SQL
     capabilities without requiring a running web server.
 
     Attributes:
@@ -53,9 +53,9 @@ class QueryWeaver:
         falkordb_url: Optional[str] = None,
         user_id: str = "default",
     ):
-        """Initialize QueryWeaver SDK.
+        """Initialize SQLTexter SDK.
 
-        Multiple QueryWeaver instances can coexist in the same process —
+        Multiple SQLTexter instances can coexist in the same process —
         each holds its own FalkorDB connection and passes it explicitly
         into core functions, so there is no shared global state to collide.
 
@@ -144,7 +144,7 @@ class QueryWeaver:
 
         Examples:
             Simple usage:
-                result = await qw.query("mydb", "Show all customers")
+                result = await client.query("mydb", "Show all customers")
 
             Advanced usage with context:
                 request = QueryRequest(
@@ -153,7 +153,7 @@ class QueryWeaver:
                     result_history=["Found 10 customers"],
                     instructions="Use customer_id for joins",
                 )
-                result = await qw.query("mydb", request)
+                result = await client.query("mydb", request)
         """
         from api.core.text2sql import ChatRequest, collect_result, run_query
 
@@ -308,7 +308,7 @@ class QueryWeaver:
             await asyncio.gather(*tasks, return_exceptions=True)
         await self._connection.close()
 
-    async def __aenter__(self) -> "QueryWeaver":
+    async def __aenter__(self) -> "SQLTexter":
         """Async context manager entry."""
         return self
 

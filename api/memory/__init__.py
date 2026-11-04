@@ -1,5 +1,5 @@
 """
-QueryWeaver Memory System
+SQLTexter Memory System
 """
 
 from .graphiti_tool import MemoryTool

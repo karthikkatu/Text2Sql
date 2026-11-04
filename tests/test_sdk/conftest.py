@@ -1,4 +1,4 @@
-"""Test fixtures for QueryWeaver SDK integration tests."""
+"""Test fixtures for SQLTexter SDK integration tests."""
 
 import os
 import pytest
@@ -151,13 +151,13 @@ def mysql_url():
 
 
 @pytest.fixture
-async def queryweaver(falkordb_url):
-    """Provide initialized QueryWeaver instance with proper teardown."""
-    from queryweaver import QueryWeaver
+async def sqltexter(falkordb_url):
+    """Provide initialized SQLTexter instance with proper teardown."""
+    from sqltexter import SQLTexter
 
-    qw = QueryWeaver(falkordb_url=falkordb_url, user_id="test_user")
-    yield qw
-    await qw.close()
+    client = SQLTexter(falkordb_url=falkordb_url, user_id="test_user")
+    yield client
+    await client.close()
 
 
 @pytest.fixture

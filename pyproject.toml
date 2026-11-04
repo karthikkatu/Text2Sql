@@ -1,12 +1,11 @@
 [project]
-name = "queryweaver"
+name = "sqltexter"
 dynamic = ["version"]
 description = "Text2SQL tool that transforms natural language into SQL using graph-powered schema understanding"
 readme = "README.md"
-license = "AGPL-3.0-or-later"
 requires-python = ">=3.12"
 authors = [
-    { name = "FalkorDB", email = "support@falkordb.com" }
+    { name = "Ushnesha Daripa", email = "udaripa@asu.edu" },
 ]
 keywords = ["text2sql", "sql", "nlp", "llm", "database", "falkordb"]
 classifiers = [
@@ -74,15 +73,16 @@ dev = [
 
 # All dependencies (server + dev)
 all = [
-    "queryweaver[server]",
-    "queryweaver[dev]",
+    "sqltexter[server]",
+    "sqltexter[dev]",
 ]
 
 [project.urls]
-Homepage = "https://github.com/FalkorDB/QueryWeaver"
-Documentation = "https://github.com/FalkorDB/QueryWeaver#readme"
-Repository = "https://github.com/FalkorDB/QueryWeaver"
-Issues = "https://github.com/FalkorDB/QueryWeaver/issues"
+Homepage = "https://github.com/karthikkatu/Text2Sql"
+Documentation = "https://github.com/karthikkatu/Text2Sql#readme"
+Repository = "https://github.com/karthikkatu/Text2Sql"
+Issues = "https://github.com/karthikkatu/Text2Sql/issues"
+Upstream = "https://github.com/karthikkatu/Text2Sql"
 
 [dependency-groups]
 dev = [
@@ -102,7 +102,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.version]
-path = "queryweaver/__init__.py"
+path = "sqltexter/__init__.py"
 
 # Ship the SDK plus only the api/ code it transitively imports. The server
 # HTTP layer (routes/auth/app_factory/index) is excluded from the published
@@ -110,7 +110,7 @@ path = "queryweaver/__init__.py"
 # api/extensions.py is kept: api/core/db_resolver.py lazily imports it as the
 # default FalkorDB handle when callers pass db=None.
 [tool.hatch.build.targets.wheel]
-packages = ["queryweaver", "api"]
+packages = ["sqltexter", "api"]
 exclude = [
     "api/routes",
     "api/auth",
@@ -122,10 +122,9 @@ exclude = [
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "/queryweaver",
+    "/sqltexter",
     "/api",
-    "/README.md",
-    "/LICENSE",
+    "/README.md"
 ]
 exclude = [
     "api/routes",

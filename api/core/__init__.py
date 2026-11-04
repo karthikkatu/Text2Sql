@@ -1,8 +1,8 @@
 
 """
-Core module for QueryWeaver.
+Core module for SQLTexter.
 
-This module provides the core functionality for QueryWeaver including
+This module provides the core functionality for SQLTexter including
 error handling, database schema loading, and text-to-SQL processing.
 """
 

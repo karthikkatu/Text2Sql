@@ -19,7 +19,7 @@ export class AuthService {
 
       // 403 = Not authenticated (normal state - user can still use the app)
       if (response.status === 403) {
-        console.log('Not authenticated - you can still use QueryWeaver, sign in to save databases');
+        console.log('Not authenticated - you can still use SQLTexter, sign in to save databases');
         return { authenticated: false };
       }
 

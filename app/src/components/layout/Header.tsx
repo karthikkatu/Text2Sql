@@ -19,7 +19,7 @@ const Header = ({ onConnectDatabase, onUploadSchema }: HeaderProps) => {
   useEffect(() => {
     const controller = new AbortController();
     
-    fetch('https://api.github.com/repos/FalkorDB/QueryWeaver', {
+    fetch('https://api.github.com/repos/karthikkatu/Text2Sql', {
       signal: controller.signal,
     })
       .then(response => {
@@ -82,11 +82,11 @@ const Header = ({ onConnectDatabase, onUploadSchema }: HeaderProps) => {
 
       {/* GitHub Stars Link */}
       <a 
-        href="https://github.com/FalkorDB/QueryWeaver" 
+        href="https://github.com/karthikkatu/Text2Sql" 
         target="_blank" 
         rel="noopener noreferrer"
         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-card hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-        title="View QueryWeaver on GitHub"
+        title="View SQLTexter on GitHub"
       >
         <svg 
           width="16" 

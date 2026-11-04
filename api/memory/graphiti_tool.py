@@ -1,5 +1,5 @@
 """
-Graphiti integration for QueryWeaver memory component.
+Graphiti integration for SQLTexter memory component.
 Saves summarized conversations with user and database nodes.
 """
 # pylint: disable=all
@@ -22,6 +22,7 @@ from api.config import Config
 from api.core.db_resolver import resolve_db
 from graphiti_core.nodes import EpisodeType
 from graphiti_core.llm_client import LLMConfig, OpenAIClient
+from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.embedder import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.cross_encoder import OpenAIRerankerClient
 from graphiti_core.search.search_config_recipes import NODE_HYBRID_SEARCH_RRF
@@ -135,7 +136,7 @@ class MemoryTool:
                     'name': user_node_name,
                     'group_id': '\\_',
                     'created_at': datetime.now().isoformat(),
-                    'summary': 'The User is using QueryWeaver',
+                    'summary': 'The User is using SQLTexter',
                     'name_embedding': user_name_embedding
                 }
                 
@@ -719,7 +720,7 @@ class MemoryTool:
         conv_text += "\n"
 
         prompt = f"""
-                Rewrite the following QueryWeaver question-answer interaction into a 
+                Rewrite the following SQLTexter question-answer interaction into a 
                 database-oriented conversational summary for database "{self.graph_id}".  
 
                 ### Requirements
@@ -852,16 +853,39 @@ def create_graphiti_client(falkor_driver: FalkorDriver) -> Graphiti:
     elif Config.LLM_PROVIDER == "openai":
         # OpenAI provider — use OpenAIEmbedder with configured model
         embedding_model_name = extract_embedding_model_name(Config.EMBEDDING_MODEL_NAME)
-
-        graphiti_client = Graphiti(
-            graph_driver=falkor_driver,
-            embedder=OpenAIEmbedder(
-                config=OpenAIEmbedderConfig(
-                    embedding_model=embedding_model_name,
-                    embedding_dim=1536
-                )
-            ),
+        # Same lookup order as litellm, which serves the rest of the app. The
+        # OpenAI SDK behind Graphiti does not read OPENAI_API_BASE, so without
+        # this a gateway key is sent to api.openai.com.
+        base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
+        embedder = OpenAIEmbedder(
+            config=OpenAIEmbedderConfig(
+                embedding_model=embedding_model_name,
+                embedding_dim=1536,
+                base_url=base_url,
+            )
         )
+
+        if base_url:
+            # Gateways do not all offer the Responses API or OpenAI's model
+            # names, which Graphiti's defaults rely on, so use chat completions
+            # with the configured model for every client.
+            completion_model_name = extract_embedding_model_name(Config.COMPLETION_MODEL)
+            gateway_llm_config = LLMConfig(
+                model=completion_model_name,
+                small_model=completion_model_name,
+                base_url=base_url,
+            )
+            graphiti_client = Graphiti(
+                graph_driver=falkor_driver,
+                llm_client=OpenAIGenericClient(config=gateway_llm_config),
+                embedder=embedder,
+                cross_encoder=OpenAIRerankerClient(config=gateway_llm_config),
+            )
+        else:
+            graphiti_client = Graphiti(
+                graph_driver=falkor_driver,
+                embedder=embedder,
+            )
     else:
         # Non-OpenAI/Azure providers (Gemini, Anthropic, Ollama, Cohere):
         # Graphiti memory requires OpenAI-compatible embeddings.

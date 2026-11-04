@@ -246,7 +246,7 @@ const ChatMessage = ({ type, content, steps, queryData, analysisInfo, confirmati
         <div className="flex gap-3 mb-6 items-start">
           <Avatar className="w-8 h-8 flex-shrink-0">
             <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">
-              QW
+              ST
             </AvatarFallback>
           </Avatar>
           <div className="flex-1 min-w-0">
@@ -344,7 +344,7 @@ const ChatMessage = ({ type, content, steps, queryData, analysisInfo, confirmati
         <div className="flex gap-3 mb-6 items-start">
           <Avatar className="w-8 h-8 flex-shrink-0">
               <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">
-                QW
+                ST
               </AvatarFallback>
           </Avatar>
           <div className="flex-1 min-w-0">
@@ -446,7 +446,7 @@ const ChatMessage = ({ type, content, steps, queryData, analysisInfo, confirmati
         <div className="flex gap-3 mb-6 items-start">
           <Avatar className="w-8 h-8 flex-shrink-0">
             <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">
-              QW
+              ST
             </AvatarFallback>
         </Avatar>
         <div className="flex-1 min-w-0 max-w-full overflow-hidden">
@@ -501,7 +501,7 @@ const ChatMessage = ({ type, content, steps, queryData, analysisInfo, confirmati
         <div className="flex gap-3 mb-6 items-start">
           <Avatar className="w-8 h-8 flex-shrink-0">
               <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">
-                QW
+                ST
               </AvatarFallback>
           </Avatar>
           <div className="flex-1 min-w-0">
@@ -532,7 +532,7 @@ const ChatMessage = ({ type, content, steps, queryData, analysisInfo, confirmati
       <div className="flex gap-3 mb-6 items-start">
         <Avatar className="w-8 h-8 flex-shrink-0">
           <AvatarFallback className="bg-primary text-primary-foreground text-xs font-bold">
-            QW
+            ST
           </AvatarFallback>
         </Avatar>
         <div className="flex-1 min-w-0">

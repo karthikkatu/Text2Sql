@@ -1,10 +1,10 @@
-# QueryWeaver Copilot Instructions
+# SQLTexter Copilot Instructions
 
-This file provides essential information for coding agents working with the QueryWeaver repository. Follow these instructions to work efficiently and avoid common pitfalls.
+This file provides essential information for coding agents working with the SQLTexter repository. Follow these instructions to work efficiently and avoid common pitfalls.
 
 ## Repository Overview
 
-QueryWeaver is an open-source Text2SQL tool that transforms natural language into SQL using graph-powered schema understanding. Built with Python/FastAPI and FalkorDB (graph database), it provides a web interface for natural language database queries with OAuth authentication.
+SQLTexter is an open-source Text2SQL tool that transforms natural language into SQL using graph-powered schema understanding. Built with Python/FastAPI and FalkorDB (graph database), it provides a web interface for natural language database queries with OAuth authentication.
 
 **Key Technologies:**
 - **Backend**: Python 3.12+, FastAPI 0.115.0+, FalkorDB (Redis-based graph database)
@@ -102,10 +102,10 @@ Important: If you're preparing a production deployment or have changed frontend 
 
 ### 5a. Running with Docker
 
-You can run QueryWeaver using Docker without installing Python dependencies locally:
+You can run SQLTexter using Docker without installing Python dependencies locally:
 
 ```bash
-docker run -p 5000:5000 -it falkordb/queryweaver
+docker run -p 5000:5000 -it sqltexter
 ```
 
 #### Passing Environment Variables
@@ -113,7 +113,7 @@ docker run -p 5000:5000 -it falkordb/queryweaver
 You can pass environment variables individually using `-e` flags, or provide a full environment file using `--env-file`:
 
 ```bash
-docker run -p 5000:5000 --env-file .env falkordb/queryweaver
+docker run -p 5000:5000 --env-file .env sqltexter
 ```
 
 Use the provided `.env.example` as a template:
@@ -121,7 +121,7 @@ Use the provided `.env.example` as a template:
 ```bash
 cp .env.example .env
 # Edit .env with your values, then run:
-docker run -p 5000:5000 --env-file .env falkordb/queryweaver
+docker run -p 5000:5000 --env-file .env sqltexter
 ```
 
 ### 6. Cleanup
@@ -326,7 +326,7 @@ Before submitting any changes, run these validation steps:
 
 ### MCP (Model Context Protocol)
 
-QueryWeaver optionally exposes an MCP HTTP surface (mounted at `/mcp`) to allow external MCP clients to call QueryWeaver's Text2SQL operations. Key points for coding agents and reviewers:
+SQLTexter optionally exposes an MCP HTTP surface (mounted at `/mcp`) to allow external MCP clients to call SQLTexter's Text2SQL operations. Key points for coding agents and reviewers:
 
 - Runtime toggle: the built-in MCP endpoints can be disabled with the env var `DISABLE_MCP=true`. Default behavior is enabled.
 - Client config: consumers typically use an `mcp.json` (or client-specific config) that points to the MCP URL, for example:
@@ -334,7 +334,7 @@ QueryWeaver optionally exposes an MCP HTTP surface (mounted at `/mcp`) to allow 
 ```json
 {
    "servers": {
-      "queryweaver": { 
+      "sqltexter": { 
          "type": "http", 
          "url": "http://127.0.0.1:5000/mcp", 
          "headers": { 
@@ -352,10 +352,10 @@ QueryWeaver optionally exposes an MCP HTTP surface (mounted at `/mcp`) to allow 
 Example: generate `mcp.json` from an environment token (pseudo):
 
 ```bash
-export MQW_TOKEN="secret-token"
+export MCP_TOKEN="secret-token"
 cat > mcp.json <<EOF
 {
-   "servers": {"queryweaver": {"type":"http","url":"http://127.0.0.1:5000/mcp","headers":{"Authorization":"Bearer ${MQW_TOKEN}"}}},
+   "servers": {"sqltexter": {"type":"http","url":"http://127.0.0.1:5000/mcp","headers":{"Authorization":"Bearer ${MCP_TOKEN}"}}},
    "inputs": []
 }
 EOF

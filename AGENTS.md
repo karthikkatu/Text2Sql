@@ -1,10 +1,10 @@
-# AGENTS.md — QueryWeaver (Text2SQL)
+# AGENTS.md — SQLTexter (Text2SQL)
 
 ## Project Overview
 
-QueryWeaver is an open-source Text2SQL tool that converts natural-language questions into SQL using graph-powered schema understanding backed by FalkorDB. It is a full-stack monorepo with a Python/FastAPI backend (`api/`) and a React/TypeScript frontend (`app/`).
+SQLTexter is an open-source Text2SQL tool that converts natural-language questions into SQL using graph-powered schema understanding backed by FalkorDB. It is a full-stack monorepo with a Python/FastAPI backend (`api/`) and a React/TypeScript frontend (`app/`).
 
-Repository: `FalkorDB/QueryWeaver`
+Repository: `karthikkatu/Text2Sql`
 
 ## Tech Stack
 

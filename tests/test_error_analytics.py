@@ -1,4 +1,4 @@
-"""Tests for QueryWeaver error analytics."""
+"""Tests for SQLTexter error analytics."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,7 +19,7 @@ def _request() -> Request:
         "headers": [],
         "query_string": b"",
         "scheme": "https",
-        "server": ("queryweaver.example", 443),
+        "server": ("sqltexter.example", 443),
     })
     request.state.user_email = "user@example.com"
     return request
@@ -55,7 +55,7 @@ def test_safe_message_preserves_diagnostic_phrases():
 
 @pytest.mark.asyncio
 async def test_report_error_writes_org_graph():
-    """Unhandled errors should be written with QueryWeaver attribution."""
+    """Unhandled errors should be written with SQLTexter attribution."""
     graph = AsyncMock()
     client = MagicMock()
     client.select_graph.return_value = graph

@@ -81,14 +81,14 @@ const Settings = () => {
   const [useMemory, setUseMemory] = useState(() => {
     // Load from localStorage on init, default to true
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('queryweaver_use_memory');
+      const saved = localStorage.getItem('sqltexter_use_memory');
       return saved === null ? true : saved === 'true';
     }
     return true;
   });
   const [initialUseMemory] = useState(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('queryweaver_use_memory');
+      const saved = localStorage.getItem('sqltexter_use_memory');
       return saved === null ? true : saved === 'true';
     }
     return true;
@@ -96,14 +96,14 @@ const Settings = () => {
   const [useRulesFromDatabase, setUseRulesFromDatabase] = useState(() => {
     // Load from localStorage on init, default to false
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('queryweaver_use_rules_from_database');
+      const saved = localStorage.getItem('sqltexter_use_rules_from_database');
       return saved === null ? false : saved === 'true';
     }
     return false;
   });
   const [initialUseRulesFromDatabase] = useState(() => {
     if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('queryweaver_use_rules_from_database');
+      const saved = localStorage.getItem('sqltexter_use_rules_from_database');
       return saved === null ? false : saved === 'true';
     }
     return false;
@@ -111,7 +111,7 @@ const Settings = () => {
 
   // Fetch GitHub stars
   useEffect(() => {
-    fetch('https://api.github.com/repos/FalkorDB/QueryWeaver')
+    fetch('https://api.github.com/repos/karthikkatu/Text2Sql')
       .then(response => response.json())
       .then(data => {
         if (typeof data.stargazers_count === 'number') {
@@ -263,14 +263,14 @@ const Settings = () => {
   // Auto-save to localStorage whenever useMemory changes
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('queryweaver_use_memory', String(useMemory));
+      localStorage.setItem('sqltexter_use_memory', String(useMemory));
     }
   }, [useMemory]);
 
   // Auto-save to localStorage whenever useRulesFromDatabase changes
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('queryweaver_use_rules_from_database', String(useRulesFromDatabase));
+      localStorage.setItem('sqltexter_use_rules_from_database', String(useRulesFromDatabase));
     }
   }, [useRulesFromDatabase]);
 
@@ -370,7 +370,7 @@ const Settings = () => {
           <div className="hidden md:flex items-center justify-between p-6">
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-3">
-                <img src="/icons/queryweaver.svg" alt="QueryWeaver" style={{ height: '3rem', width: 'auto' }} />
+                <img src="/icons/sqltexter.svg" alt="SQLTexter" style={{ height: '3rem', width: 'auto' }} />
                 <span className="text-muted-foreground">|</span>
                 <p className="text-sm text-muted-foreground">Graph-Powered Text-to-SQL</p>
               </div>
@@ -387,11 +387,11 @@ const Settings = () => {
               )}
               {/* GitHub Stars Link */}
               <a
-                href="https://github.com/FalkorDB/QueryWeaver"
+                href="https://github.com/karthikkatu/Text2Sql"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-card hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-                title="View QueryWeaver on GitHub"
+                title="View SQLTexter on GitHub"
               >
                 <svg 
                   width="16" 
@@ -454,11 +454,11 @@ const Settings = () => {
                 >
                   {sidebarCollapsed ? <PanelLeft className="h-5 w-5" /> : <X className="h-5 w-5" />}
                 </button>
-                <img src="/icons/queryweaver.svg" alt="QueryWeaver" className="h-8" />
+                <img src="/icons/sqltexter.svg" alt="SQLTexter" className="h-8" />
               </div>
               <div className="flex items-center gap-2">
                 <a
-                  href="https://github.com/FalkorDB/QueryWeaver"
+                  href="https://github.com/karthikkatu/Text2Sql"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-1 px-2 py-1 rounded bg-card hover:bg-muted transition-colors text-muted-foreground"
@@ -782,7 +782,7 @@ const Settings = () => {
 
             {/* Version footer */}
             <div className="pt-2 text-center text-xs text-muted-foreground">
-              QueryWeaver {appVersion ? `v${appVersion}` : ''}
+              SQLTexter {appVersion ? `v${appVersion}` : ''}
             </div>
           </div>
         </div>

@@ -13,7 +13,7 @@ This loader connects to a PostgreSQL database and extracts the complete schema i
 
 ## Installation
 
-psycopg2-binary is already included in QueryWeaver's dependencies. Install project dependencies with:
+psycopg2-binary is already included in SQLTexter's dependencies. Install project dependencies with:
 
 ```bash
 uv sync
@@ -113,7 +113,7 @@ postgresql://user:pass@host:port/database?options=-csearch_path%3Dschema_name
 
 **Using the UI:**
 
-When connecting via the QueryWeaver UI with "Manual Entry" mode for PostgreSQL, you can specify the schema in the optional "Schema" field. Leave it empty to use the default `public` schema.
+When connecting via the SQLTexter UI with "Manual Entry" mode for PostgreSQL, you can specify the schema in the optional "Schema" field. Leave it empty to use the default `public` schema.
 
 ### Integration with Graph Database
 

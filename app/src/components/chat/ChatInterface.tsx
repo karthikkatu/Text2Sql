@@ -74,7 +74,7 @@ const ChatInterface = ({
     <div className="loading-message-container px-6">
       <div className="flex gap-3 mb-6 items-start">
         <div className="w-8 h-8 bg-purple-600 rounded-full flex items-center justify-center flex-shrink-0">
-          <span className="text-white text-xs font-bold">QW</span>
+          <span className="text-white text-xs font-bold">ST</span>
         </div>
         <div className="flex-1 min-w-0 space-y-2">
           <Skeleton className="h-4 w-3/4 bg-muted" />
@@ -109,7 +109,7 @@ const ChatInterface = ({
     if (!selectedGraph) {
       toast({
         title: "No Database Available",
-        description: "Please upload a database schema first, or start the QueryWeaver backend to use real databases.",
+        description: "Please upload a database schema first, or start the SQLTexter backend to use real databases.",
         variant: "destructive",
       });
       return;
@@ -575,13 +575,6 @@ const ChatInterface = ({
               <span className="text-muted-foreground text-sm">Processing your query...</span>
             </div>
           )}
-          
-          {/* Footer */}
-          <div className="text-center mt-4">
-            <p className="text-muted-foreground text-sm">
-              Powered by <a href="https://falkordb.com" target="_blank">FalkorDB</a>
-            </p>
-          </div>
         </div>
       </div>
     </div>

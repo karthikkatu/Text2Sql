@@ -1,7 +1,7 @@
--- QueryWeaver demo schema: 12-table e-commerce
-DROP DATABASE IF EXISTS queryweaver_demo;
-CREATE DATABASE queryweaver_demo;
-\c queryweaver_demo
+-- SQLTexter demo schema: 12-table e-commerce
+DROP DATABASE IF EXISTS sqltexter_demo;
+CREATE DATABASE sqltexter_demo;
+\c sqltexter_demo
 
 -- 1. users
 CREATE TABLE users (

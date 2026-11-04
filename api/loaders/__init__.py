@@ -1,1 +1,1 @@
-"""Database loaders for QueryWeaver."""
+"""Database loaders for SQLTexter."""

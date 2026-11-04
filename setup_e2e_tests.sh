@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# QueryWeaver E2E Test Setup Script
+# SQLTexter E2E Test Setup Script
 # This script demonstrates how to set up and run E2E tests
 
 set -e
 
-echo "🚀 Setting up QueryWeaver E2E Tests"
+echo "🚀 Setting up SQLTexter E2E Tests"
 echo "=================================="
 
 # Check if uv is installed

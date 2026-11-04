@@ -86,7 +86,7 @@ RUN chmod +x /start.sh
 
 
 # Add MCP label
-LABEL io.modelcontextprotocol.server.name="com.falkordb/QueryWeaver"
+LABEL io.modelcontextprotocol.server.name="io.github.karthikkatu/sqltexter"
 
 EXPOSE 5000 6379 3000
 

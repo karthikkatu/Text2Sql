@@ -1,6 +1,6 @@
 // API Configuration
 export const API_CONFIG = {
-  // Base URL for the QueryWeaver backend API
+  // Base URL for the SQLTexter backend API
   // When served from backend (port 5000): use empty string (same origin)
   // When using Vite dev server (port 8080): use /api prefix for proxy
   // For production: use environment variable or empty string
@@ -9,7 +9,7 @@ export const API_CONFIG = {
     window.location.port === '8080' ? '/api' : ''
   ),
   
-  // Streaming boundary marker used by QueryWeaver backend
+  // Streaming boundary marker used by SQLTexter backend
   STREAM_BOUNDARY: '|||FALKORDB_MESSAGE_BOUNDARY|||',
   
   // Endpoints

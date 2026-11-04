@@ -1,4 +1,4 @@
-"""FalkorDB connection management for QueryWeaver SDK."""
+"""FalkorDB connection management for SQLTexter SDK."""
 
 import os
 from typing import Optional
@@ -55,7 +55,7 @@ class FalkorDBConnection:
         """
         if self._closed:
             raise RuntimeError(
-                "FalkorDBConnection is closed; create a new QueryWeaver instance"
+                "FalkorDBConnection is closed; create a new SQLTexter instance"
             )
         if self._db is None:
             self._db = self._create_connection()

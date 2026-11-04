@@ -32,7 +32,7 @@ async def _write_error(request: Request, exc: Exception) -> None:
     await graph.query(
         """
         CREATE (e:Error {
-            source: 'queryweaver',
+            source: 'sqltexter',
             type: $type,
             message: $message,
             endpoint: $endpoint,
@@ -81,7 +81,7 @@ def report_error(
         analytics_error = done.exception()
         if analytics_error is not None:
             LOGGER.error(
-                "Failed to report QueryWeaver error to analytics: %s",
+                "Failed to report SQLTexter error to analytics: %s",
                 analytics_error,
                 exc_info=(
                     type(analytics_error),
